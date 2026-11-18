@@ -412,6 +412,31 @@ grep -q 'Admin password' /tmp/setup.html && grep -q '/setup/login' /tmp/setup.ht
 wget -q -O /tmp/setup.css http://127.0.0.1/setup/static/style.css && grep -q 'prefers-color-scheme' /tmp/setup.css && ok || \
 	fail "the wizard's stylesheet didn't come through nginx"
 wget -q -O /dev/null http://127.0.0.1/index.php && ok || fail "the dashboard stopped working with the /setup/ location"
+
+section "Setup access point (m17os-netwatch)"
+for p in hostapd dnsmasq; do apk info -e "$p" >/dev/null && ok || fail "$p not installed"; done
+[ -L /etc/runlevels/default/m17os-netwatch ] && ok || fail "m17os-netwatch not in the default runlevel"
+[ -L /etc/runlevels/default/hostapd ] || [ -L /etc/runlevels/default/dnsmasq ] && fail "hostapd or dnsmasq starts at boot" || ok
+# The generated dnsmasq configuration is valid
+( NW_RUN=/tmp/nwcfg; . /usr/local/lib/m17os/netwatch.sh; nw_write_configs )
+dnsmasq --test --conf-file=/tmp/nwcfg/dnsmasq.conf >/dev/null 2>&1 && ok || fail "dnsmasq rejects the setup configuration: $(dnsmasq --test --conf-file=/tmp/nwcfg/dnsmasq.conf 2>&1)"
+# Phones' captive-portal checks, through nginx, lead to the wizard
+for path in /generate_204 /hotspot-detect.html /connecttest.txt; do
+	loc=$(wget -S -O /dev/null --header "Host: connectivitycheck.example" "http://127.0.0.1$path" 2>&1 | sed -n 's/^ *Location: //p' | head -1 | tr -d '\r')
+	check "captive check $path" "http://connectivitycheck.example/setup/" "$loc"
+done
+# By hand
+out=$(sh /usr/local/bin/m17os-setup-ap start)
+[ -f /run/m17os/request-ap ] && ok || fail "m17os-setup-ap start: $out"
+rm -f /run/m17os/request-ap
+sh /usr/local/bin/m17os-setup-ap status | grep -q '^access point: M17-Setup-' && ok || fail "m17os-setup-ap status"
+# New WiFi settings while the AP is up: the helper asks netwatch to join
+echo ap > /run/m17os/mode
+printf 'wifi_ssid=APTest\nwifi_password=aptestpass\n' | M17OS_ACTION_DELAY=0 sh /usr/local/libexec/m17os/admin-helper apply >/dev/null
+sleep 1
+[ -f /run/m17os/request-join ] && ok || fail "helper apply in AP mode didn't ask netwatch to join"
+rm -f /run/m17os/request-join /run/m17os/mode
+
 pkill -f '/usr/bin/m17-admin' 2>/dev/null
 
 section "Gateway health hook"

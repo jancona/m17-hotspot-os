@@ -24,7 +24,13 @@ Download the image, write it to a card, boot, and set your callsign. No Raspberr
 4. Put the card in the Pi and power it on. The first boot expands the data partition and reboots once (twice for an SX1255 HAT), so give it two or three minutes.
 5. Open **http://m17-hotspot.local/** (or the Pi's IP address). If you didn't use `m17-config.txt`, set the callsign and the rest on the dashboard's **Gateway** page. That page needs the dashboard password, which you set with `dashboard_password` in `m17-config.txt` or over SSH (below).
 
-Without WiFi details, connect the Pi to Ethernet for setup. A setup wizard with a WiFi access point for first-time configuration is planned.
+### Setup without m17-config.txt
+
+If the hotspot has no network 90 seconds after it starts (no Ethernet, and no WiFi it can join), it starts its own open WiFi network, **M17-Setup-XXXX** (the last four characters of its WiFi MAC address). Join it with a phone or laptop: the setup wizard opens by itself (or open any web address). The wizard sets the admin password, WiFi, callsign, radio HAT (it detects CC1200 and MMDVM boards), frequency, reflector and updates. When it applies new WiFi details, the hotspot leaves M17-Setup and joins that network; if it can't within a minute, M17-Setup comes back so you can try again.
+
+With Ethernet, open **http://m17-hotspot.local/setup/** instead. The wizard is also how to change those settings later.
+
+The same access point starts if a working network is lost for 5 minutes. While it's up and nobody is connected to it, the hotspot retries its saved WiFi every 10 minutes, so after a power cut it finds the router again by itself even if the Pi started first. `doas m17os-setup-ap start|stop|status` controls it by hand.
 
 ### Logging in
 

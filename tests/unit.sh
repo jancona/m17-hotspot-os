@@ -266,6 +266,94 @@ else
 	echo "skip: m17os-autoupdate tests need root"
 fi
 
+# ── netwatch.sh (setup access point decisions) ───────────────────────
+# Each scenario runs the real loop with stand-ins: a fake clock, a
+# scripted "online" answer, and actions recorded in $NW/actions.
+NW="$T/nw"
+nw_scenario() { # nw_scenario ONLINE_FROM ONLINE_UNTIL ITERATIONS [SETUP]
+	rm -rf "$NW" && mkdir -p "$NW/run"
+	(
+		NW_RUN="$NW/run" NW_POLL=5 NW_BOOT_GRACE=90 NW_LOST_GRACE=300 NW_JOIN_WAIT=60 NW_RETRY=600
+		. "$LIB/netwatch.sh"
+		slot_event() { :; }
+		logger() { :; }
+		CLOCK=1000
+		nw_now() { echo "$CLOCK"; }
+		# shellcheck disable=SC1090  # the scenario's scripted events
+		nw_sleep() { CLOCK=$((CLOCK + $1)); [ -f "$NW/at-$CLOCK" ] && . "$NW/at-$CLOCK"; }
+		# online between ONLINE_FROM and ONLINE_UNTIL seconds after start ("" = never)
+		ON_FROM="$1" ON_UNTIL="$2"
+		nw_online() {
+			[ -n "$ON_FROM" ] || return 1
+			t=$((CLOCK - 1000))
+			[ "$t" -ge "$ON_FROM" ] && { [ -z "$ON_UNTIL" ] || [ "$t" -lt "$ON_UNTIL" ]; }
+		}
+		nw_have_saved() { [ -f "$NW/saved" ]; }
+		nw_ap_clients() { if [ -f "$NW/clients" ]; then echo 1; else echo 0; fi; }
+		nw_ap_start() { echo "ap_start@$((CLOCK - 1000))" >> "$NW/actions"; }
+		nw_ap_stop() { echo "ap_stop@$((CLOCK - 1000))" >> "$NW/actions"; }
+		nw_client_start() { echo "client@$((CLOCK - 1000))" >> "$NW/actions"; }
+		[ -n "${4:-}" ] && eval "$4"
+		nw_loop "$3"
+	)
+}
+actions() { [ -f "$NW/actions" ] && tr '\n' ' ' < "$NW/actions" | sed 's/ $//'; }
+
+nw_scenario "" "" 30
+check "no network at boot: AP after 90s" "ap_start@90" "$(actions)"
+check "mode is ap" "ap" "$(cat "$NW/run/mode")"
+
+nw_scenario 30 "" 40
+check "network at 30s: never AP" "" "$(actions)"
+
+nw_scenario 0 100 70
+check "lost for under 5 min: no AP" "" "$(actions)"
+nw_scenario 0 100 90
+check "lost for 5 min: AP" "ap_start@400" "$(actions)"
+
+# In AP mode, new settings: join, and it connects
+nw_scenario "" "" 40 'echo "touch $NW/run/request-join; ON_FROM=200" > "$NW/at-1195"'
+check "join after new settings" "ap_start@90 ap_stop@195 client@195" "$(actions)"
+check "back to client mode" "client" "$(cat "$NW/run/mode")"
+
+# ...and it doesn't connect: back to the AP, failure recorded
+nw_scenario "" "" 40 'echo "touch $NW/run/request-join" > "$NW/at-1195"'
+check "failed join: AP again" "ap_start@90 ap_stop@195 client@195 ap_start@255" "$(actions)"
+[ -f "$NW/run/join-failed" ] && ok || fail "failed join not recorded"
+
+# Saved WiFi and an idle AP: retry every 10 minutes (the router came up late)
+nw_scenario "" "" 150 'touch "$NW/saved"; echo "ON_FROM=690" > "$NW/at-1690"'
+check "retry the saved WiFi after 10 min" "ap_start@90 ap_stop@690 client@690" "$(actions)"
+# ...but not while someone is using the AP
+nw_scenario "" "" 150 'touch "$NW/saved" "$NW/clients"'
+check "no retry with a phone on the AP" "ap_start@90" "$(actions)"
+# ...and not without saved WiFi
+nw_scenario "" "" 150
+check "no retry without saved WiFi" "ap_start@90" "$(actions)"
+
+# Started by hand
+nw_scenario 0 "" 10 'echo "touch $NW/run/request-ap" > "$NW/at-1015"'
+check "m17os-setup-ap start" "ap_start@15" "$(actions)"
+
+# A restarted watcher clears an AP left running
+nw_scenario 0 "" 2 'echo ap > "$NW/run/mode"'
+check "restart with the AP up" "ap_stop@0 client@0" "$(actions)"
+
+# The access point's configuration
+(
+	NW_RUN="$NW/cfg" NW_WPA_CONF="$NW/wpa.conf"
+	printf 'ctrl_interface=/var/run/wpa_supplicant\ncountry=GB\n' > "$NW/wpa.conf"
+	. "$LIB/netwatch.sh"
+	nw_ssid() { echo "M17-Setup-A1B2"; }
+	nw_write_configs
+)
+grep -q '^ssid=M17-Setup-A1B2$' "$NW/cfg/hostapd.conf" && ok || fail "hostapd ssid"
+grep -q '^country_code=GB$' "$NW/cfg/hostapd.conf" && ok || fail "hostapd country"
+grep -q 'wpa' "$NW/cfg/hostapd.conf" && fail "the setup AP isn't open" || ok
+grep -q '^address=/#/192.168.4.1$' "$NW/cfg/dnsmasq.conf" && ok || fail "dnsmasq doesn't answer every name"
+grep -q '^dhcp-option=114,http://192.168.4.1/setup/$' "$NW/cfg/dnsmasq.conf" && ok || fail "no RFC 8910 captive portal option"
+check "dhcp range" "dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,10m" "$(grep '^dhcp-range' "$NW/cfg/dnsmasq.conf")"
+
 # ── ini.sh ───────────────────────────────────────────────────────────
 . "$LIB/ini.sh"
 INI="$T/gw.ini"

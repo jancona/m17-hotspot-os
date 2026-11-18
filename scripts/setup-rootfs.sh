@@ -68,6 +68,10 @@ apk_add \
 	m17-sx1255-overlay \
 	m17-admin m17-admin-openrc
 
+# The setup access point (started by m17os-netwatch when there's no
+# network, never as services of their own)
+apk_add hostapd dnsmasq
+
 # ── Services ─────────────────────────────────────────────────────────
 for s in devfs dmesg hwdrivers mdev; do rc-update add "$s" sysinit; done
 for s in modules sysctl hostname bootmisc syslog networking wpa_supplicant dhcpcd; do
@@ -79,7 +83,7 @@ rc-update add swclock boot
 for s in m17os-data-resize m17os-varlog m17os-clock m17os-bindmounts m17os-config m17os-boot-watchdog; do
 	rc-update add "$s" boot
 done
-for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17-admin m17os-health-check; do
+for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17-admin m17os-netwatch m17os-health-check; do
 	rc-update add "$s" default
 done
 
@@ -227,6 +231,13 @@ awk '
 		print "\t\tproxy_set_header Host $host;"
 		print "\t\tproxy_set_header X-Forwarded-For $remote_addr;"
 		print "\t\tproxy_read_timeout 60s;"
+		print "\t}"
+		print "\t# Captive-portal checks from phones and laptops: while the setup"
+		print "\t# access point is up every name leads here, and m17-admin answers"
+		print "\t# them with the wizard"
+		print "\tlocation ~ ^/(generate_204|gen_204|hotspot-detect\\.html|library/test/success\\.html|connecttest\\.txt|ncsi\\.txt|redirect|success\\.txt|canonical\\.html)$ {"
+		print "\t\tproxy_pass http://127.0.0.1:8090;"
+		print "\t\tproxy_set_header Host $host;"
 		print "\t}"
 		print ""
 		done = 1

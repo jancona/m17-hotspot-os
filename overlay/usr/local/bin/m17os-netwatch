@@ -1,0 +1,10 @@
+#!/bin/sh
+# m17os-netwatch - start the setup access point when there's no network,
+# and return to normal networking when there is (see netwatch.sh)
+# Part of m17-hotspot-os. Runs as the m17os-netwatch service.
+LIB_DIR="${M17OS_LIB:-/usr/local/lib/m17os}"
+# shellcheck source=../lib/m17os/bootslot.sh
+. "$LIB_DIR/bootslot.sh"
+# shellcheck source=../lib/m17os/netwatch.sh
+. "$LIB_DIR/netwatch.sh"
+nw_loop

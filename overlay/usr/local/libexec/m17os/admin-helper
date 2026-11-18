@@ -21,6 +21,7 @@ WPA_CONF="${M17OS_WPA_CONF:-/etc/wpa_supplicant/wpa_supplicant.conf}"
 AUTOUPDATE_CONF="${M17OS_STATE_DIR:-/var/lib/m17os}/autoupdate.conf"
 IFACE="${M17OS_WIFI_IFACE:-wlan0}"
 CONFIG="${M17OS_CONFIG:-/usr/local/bin/m17os-config}"
+RUN="${M17OS_RUN:-/run/m17os}"
 # How long the caller's web response gets before a reconnect or reboot
 DELAY="${M17OS_ACTION_DELAY:-5}"
 
@@ -50,8 +51,14 @@ case "${1:-}" in
 			;;
 		esac
 		case "$out" in *"network: true"*)
-			# Join the new network: wpa_supplicant rereads its configuration
-			later sh -c "wpa_cli -i '$IFACE' reconfigure || rc-service wpa_supplicant restart"
+			if [ "$(cat "$RUN/mode" 2>/dev/null)" = ap ]; then
+				# The setup access point is up: m17os-netwatch leaves it
+				# and joins the new network (or brings it back)
+				later touch "$RUN/request-join"
+			else
+				# Join the new network: wpa_supplicant rereads its configuration
+				later sh -c "wpa_cli -i '$IFACE' reconfigure || rc-service wpa_supplicant restart"
+			fi
 			;;
 		esac
 		;;

@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# m17os-netwatch - the setup access point when there's no network
+# Part of m17-hotspot-os. See /usr/local/lib/m17os/netwatch.sh.
+
+description="Starts the setup access point when the hotspot has no network"
+
+supervisor=supervise-daemon
+command=/usr/local/bin/m17os-netwatch
+respawn_delay=10
+respawn_max=0
+
+depend() {
+	need localmount
+	after networking wpa_supplicant dhcpcd m17os-clock
+	use logger
+}
+
+stop_post() {
+	# Leave the hotspot in normal networking
+	if [ "$(cat /run/m17os/mode 2>/dev/null)" = ap ]; then
+		. /usr/local/lib/m17os/netwatch.sh
+		nw_ap_stop
+		nw_client_start
+		nw_set_mode client
+	fi
+}

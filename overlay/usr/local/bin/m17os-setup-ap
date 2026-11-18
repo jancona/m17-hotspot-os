@@ -1,0 +1,35 @@
+#!/bin/sh
+# m17os-setup-ap - control the setup access point by hand
+# Part of m17-hotspot-os.
+#
+#   m17os-setup-ap start    start "M17-Setup-XXXX" now (this ends WiFi
+#                           client connections, SSH over WiFi included)
+#   m17os-setup-ap stop     leave it and join the configured WiFi
+#   m17os-setup-ap status   client or ap, and the access point's name
+#
+# The m17os-netwatch service does the switching, within a few seconds.
+LIB_DIR="${M17OS_LIB:-/usr/local/lib/m17os}"
+# shellcheck source=../lib/m17os/netwatch.sh
+. "$LIB_DIR/netwatch.sh"
+case "${1:-}" in
+	start)
+		[ "$(id -u)" -eq 0 ] || { echo "must be run as root" >&2; exit 2; }
+		mkdir -p "$NW_RUN" && touch "$NW_RUN/request-ap"
+		echo "Starting the setup access point $(nw_ssid) in a few seconds"
+		;;
+	stop)
+		[ "$(id -u)" -eq 0 ] || { echo "must be run as root" >&2; exit 2; }
+		mkdir -p "$NW_RUN" && touch "$NW_RUN/request-join"
+		echo "Leaving the setup access point in a few seconds"
+		;;
+	status)
+		echo "mode: $(nw_mode)"
+		echo "access point: $(nw_ssid)"
+		[ -f "$NW_RUN/join-failed" ] && echo "last WiFi join failed: $(cat "$NW_RUN/join-failed")"
+		exit 0
+		;;
+	*)
+		echo "Usage: m17os-setup-ap start|stop|status" >&2
+		exit 2
+		;;
+esac

@@ -1,0 +1,54 @@
+# m17-hotspot-os boot configuration
+#
+# Copy this file to the boot partition as 'm17-config.txt', remove the # from
+# the lines you want, and put the card back in the Pi. The settings are
+# applied on the next boot, then THIS FILE IS DELETED because it may hold
+# passwords.
+#
+# It works for the first boot and for recovery: if the WiFi details change,
+# put the card in a PC, drop a new m17-config.txt here, and boot again.
+
+# === WIFI ===
+# Networks are numbered 1-10; when more than one is in range, the highest
+# number wins. wifi_ssid (no number) is network 1, the lowest.
+#wifi_ssid=YourHomeNetwork
+#wifi_password=YourHomePassword
+#wifi_ssid_2=YourPhoneHotspot
+#wifi_password_2=YourPhonePassword
+
+# Two-letter country code: sets the channels and power WiFi may use
+#wifi_country=US
+
+# === LOGIN ===
+# Password for the 'm17' user (default: m17hotspot - change it)
+#user_password=a-better-password
+
+# SSH accepts keys only, unless password logins are enabled here
+#enable_ssh_password=false
+#ssh_key=ssh-ed25519 AAAA... you@example.com
+
+# === SYSTEM ===
+#hostname=m17-hotspot
+#timezone=America/New_York
+
+# === M17 HOTSPOT ===
+# These change /etc/m17-gateway.ini. Everything else can be set later on
+# the dashboard's Gateway page (http://m17-hotspot.local/).
+#callsign=N0CALL
+# Radio HAT: cc1200, sx1255 or mmdvm (sx1255 needs one extra reboot)
+#hat=cc1200
+# Serial speed to the HAT. Setting 'hat' picks the usual one (460800 for
+# cc1200, 115200 for mmdvm); set this only if your board differs.
+#modem_speed=115200
+# Frequencies in MHz (or Hz). 'frequency' sets RX and TX together.
+#frequency=439.500
+#rx_frequency=439.500
+#tx_frequency=439.500
+#duplex=false
+# Transmit power, dBm
+#power=10
+#reflector=M17-M17
+#module=C
+
+# Password for the dashboard's Gateway and Settings pages (8+ characters)
+#dashboard_password=choose-something

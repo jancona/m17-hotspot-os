@@ -1,0 +1,143 @@
+name: Build m17-hotspot-os
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly: rebuild when the kernel or this repository changed, or when the
+  # last release is a month old (to pick up Alpine security updates)
+  schedule:
+    - cron: '0 3 * * 1'
+  # A manual run always builds and releases
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: docker run --rm -v "$PWD":/repo:ro alpine:3.23 sh /repo/tests/unit.sh
+
+      - name: Root filesystem smoke test
+        run: sh tests/run-smoke.sh
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # SC2034: variables set here are read by the sourced libraries
+          shellcheck -s sh -S warning -e SC2034 \
+            scripts/*.sh tests/*.sh \
+            overlay/usr/local/bin/* overlay/usr/local/lib/m17os/*.sh \
+            overlay/usr/local/libexec/m17os/* overlay/etc/m17os/health.d/* \
+            overlay/etc/periodic/daily/*
+          shellcheck -s sh -S warning -e SC2034,SC2154 overlay/etc/init.d/*
+
+  check:
+    # Decides whether this run should build and release an image
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual run - releasing"; echo "release=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          . ./build.conf
+          MANIFEST=$(curl -sfL "https://github.com/${{ github.repository }}/releases/latest/download/manifest.txt" || true)
+          built_kernel=$(echo "$MANIFEST" | sed -n 's/^RASPINE_KERNEL=//p')
+          built_commit=$(echo "$MANIFEST" | sed -n 's/^BUILD_COMMIT=//p')
+          built_date=$(echo "$MANIFEST" | sed -n 's/^BUILD_DATE=//p')
+          latest_kernel=$(curl -fsSL "$RASPINE_REPO/v$ALPINE_VERSION/community/$ALPINE_ARCH/APKINDEX.tar.gz" \
+            | tar -xzO APKINDEX | awk '/^P:raspios-kernel-v8$/ { getline; sub(/^V:/, ""); print; exit }')
+          age_days=999
+          [ -n "$built_date" ] && age_days=$(( ( $(date -u +%s) - $(date -u -d "$built_date" +%s) ) / 86400 ))
+          echo "Last release: kernel ${built_kernel:-?}, commit ${built_commit:-?}, ${age_days} days old"
+          echo "Now:          kernel ${latest_kernel:-?}, commit ${{ github.sha }}"
+          if [ -z "$built_kernel" ] || [ "$built_kernel" != "$latest_kernel" ] \
+             || [ "$built_commit" != "${{ github.sha }}" ] || [ "$age_days" -ge 30 ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing changed - skipping"; echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: [test, check]
+    # Pull requests and pushes build too (no release) so image problems show up early
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        run: |
+          # YYYY.MM.DD.N - N is the release number for that day, from 1
+          prefix=$(date -u +%Y.%m.%d)
+          last=$(git ls-remote --tags origin "refs/tags/${prefix}.*" \
+            | sed -n "s|.*refs/tags/${prefix}\.\([0-9][0-9]*\)$|\1|p" | sort -n | tail -1)
+          echo "VERSION=${prefix}.$(( ${last:-0} + 1 ))" >> "$GITHUB_ENV"
+
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq parted dosfstools e2fsprogs curl xz-utils zstd git rsync fdisk util-linux binutils minisign
+
+      - name: Build image
+        env:
+          BUILD_COMMIT: ${{ github.sha }}
+        run: sudo --preserve-env=BUILD_COMMIT scripts/build-image.sh "$VERSION" out
+
+      - name: Sign manifest
+        if: hashFiles('keys/release.pub') != ''
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::error::keys/release.pub is in the repository, so images only accept signed updates, but the MINISIGN_SECRET_KEY secret is not set"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/release.key"
+          sudo chown -R "$(id -u):$(id -g)" out
+          minisign -S -s "$RUNNER_TEMP/release.key" -m out/manifest.txt -x out/manifest.txt.minisig \
+            -t "m17-hotspot-os $VERSION" < /dev/null
+          minisign -V -p keys/release.pub -m out/manifest.txt
+          rm -f "$RUNNER_TEMP/release.key"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m17-hotspot-os-${{ env.VERSION }}
+          path: out/
+          retention-days: 30
+
+      - name: Release
+        if: needs.check.outputs.release == 'true' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: m17-hotspot-os ${{ env.VERSION }}
+          files: out/*
+          body: |
+            # m17-hotspot-os ${{ env.VERSION }}
+
+            Alpine Linux with the Raspberry Pi OS kernel, m17-gateway and the M17 web dashboard,
+            for Raspberry Pi Zero 2 W, 3, 4 and 5 with a CC1200, SX1255 or MMDVM HAT.
+
+            - **First install:** write `m17-hotspot-os-${{ env.VERSION }}.img.xz` to an SD card
+              (Raspberry Pi Imager or balenaEtcher can write it directly).
+            - **Update a running hotspot:** `doas m17os-upgrade --install`, then reboot.
+
+            See the [README](https://github.com/${{ github.repository }}#readme) for setup.

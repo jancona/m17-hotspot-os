@@ -1,0 +1,39 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# m17-gateway - M17 hotspot gateway (https://github.com/jancona/m17)
+# Part of m17-hotspot-os. OpenRC counterpart of m17-gateway.service.
+
+description="M17 Gateway"
+
+: "${M17_GATEWAY_CONFIG:=/etc/m17-gateway.ini}"
+: "${M17_GATEWAY_LOGDIR:=/var/log/m17-gateway}"
+
+supervisor=supervise-daemon
+command=/opt/m17/m17-gateway/m17-gateway
+command_args="-config $M17_GATEWAY_CONFIG"
+command_user="m17-gateway:m17-gateway"
+directory=/opt/m17/m17-gateway
+output_log="$M17_GATEWAY_LOGDIR/m17-gateway.log"
+error_log="$M17_GATEWAY_LOGDIR/m17-gateway.log"
+respawn_delay=10
+respawn_max=0
+
+depend() {
+	need localmount
+	use net dns logger
+	after m17os-config m17os-bindmounts
+}
+
+start_pre() {
+	# /var/log is a tmpfs, so the log directory is created at every boot
+	checkpath -d -o m17-gateway:m17-gateway -m 0755 "$M17_GATEWAY_LOGDIR"
+	# Created here so they are world-readable: supervise-daemon would
+	# create the output log readable by root only
+	checkpath -f -o m17-gateway:m17-gateway -m 0644 "$M17_GATEWAY_LOGDIR/dashboard.log"
+	checkpath -f -o m17-gateway:m17-gateway -m 0644 "$M17_GATEWAY_LOGDIR/m17-gateway.log"
+	[ -r "$M17_GATEWAY_CONFIG" ] || { eerror "$M17_GATEWAY_CONFIG not found"; return 1; }
+	if grep -q '^[[:space:]]*Callsign[[:space:]]*=[[:space:]]*CALLSIGN_PLACEHOLDER' "$M17_GATEWAY_CONFIG"; then
+		eerror "No callsign set: use the dashboard's Gateway page or m17-config.txt"
+		return 1
+	fi
+}

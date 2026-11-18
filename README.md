@@ -1,0 +1,135 @@
+# m17-hotspot-os
+
+A ready-to-flash SD card image for an [M17](https://m17project.org/) hotspot: a Raspberry Pi with a CC1200, SX1255 or MMDVM radio HAT running [m17-gateway](https://github.com/jancona/m17) and the [M17 web dashboard](https://github.com/M17-Project/rpi-dashboard).
+
+Download the image, write it to a card, boot, and set your callsign. No Raspberry Pi OS install and no installer script. OS updates are installed to a second root partition and roll back automatically if the new version doesn't come up healthy.
+
+> **Status: early development.** The image builds and its parts are tested in containers, but it has not yet been tested on a Raspberry Pi. The [installer script](https://github.com/M17-Project/m17-hotspot-installer) for Raspberry Pi OS remains the supported way to build a hotspot, and stays that way: this image is an alternative for people who want an appliance.
+
+## What's in it
+
+| | |
+|---|---|
+| **Base** | Alpine Linux userland with the Raspberry Pi OS kernel and firmware, from [RasPINE](https://github.com/MW0MWZ/RasPINE) |
+| **Hardware** | Raspberry Pi Zero 2 W, 3, 4, 5 (64-bit only) |
+| **M17** | m17-gateway, rpi-dashboard (nginx + PHP-FPM), the SX1255 I2S codec overlay, stm32flash |
+| **Updates** | A/B root partitions with boot watchdog, health check and automatic rollback, based on [Pi-Star OS](https://github.com/MW0MWZ/Pi-Star_OS) |
+| **Footprint** | Logs in RAM to spare the SD card; settings on a separate `/data` partition |
+
+## Getting started
+
+1. Download `m17-hotspot-os-<version>.img.xz` from [Releases](../../releases/latest).
+2. Write it to an SD card (4 GB or larger) with Raspberry Pi Imager ("Use custom") or balenaEtcher. Both take the `.img.xz` as is.
+3. **Optional, recommended:** before ejecting the card, open the `BOOT` partition, copy `m17-config.txt.sample` to `m17-config.txt` and fill in your WiFi, callsign and HAT. See [Boot configuration](#boot-configuration).
+4. Put the card in the Pi and power it on. The first boot expands the data partition and reboots once (twice for an SX1255 HAT), so give it two or three minutes.
+5. Open **http://m17-hotspot.local/** (or the Pi's IP address). If you didn't use `m17-config.txt`, set the callsign and the rest on the dashboard's **Gateway** page. That page needs the dashboard password, which you set with `dashboard_password` in `m17-config.txt` or over SSH (below).
+
+Without WiFi details, connect the Pi to Ethernet for setup. A setup wizard with a WiFi access point for first-time configuration is planned.
+
+### Logging in
+
+The user is `m17` with password `m17hotspot`. **Change it** with `user_password` in `m17-config.txt` or with `passwd`. SSH accepts keys only (add one with `ssh_key`), unless `enable_ssh_password=true` is set. `root` is locked; use `doas` (or `sudo`, which maps to it).
+
+Set the dashboard password over SSH with:
+
+```bash
+doas -u www-data php84 /opt/m17/rpi-dashboard/set_password.php
+```
+
+## Boot configuration
+
+`m17-config.txt` on the boot partition is read at the next boot and then **deleted**, because it may contain passwords. It works for the first boot and for recovery: if your WiFi changes, put the card in a PC, drop in a new `m17-config.txt`, and boot again.
+
+| Key | Meaning |
+|---|---|
+| `wifi_ssid`, `wifi_password`, `wifi_ssid_2` … `_10` | WiFi networks; the highest number wins when several are in range |
+| `wifi_country` | Two-letter country code (default `US`) |
+| `user_password`, `ssh_key`, `enable_ssh_password` | Login for the `m17` user |
+| `hostname`, `timezone` | e.g. `m17-hotspot`, `America/New_York` |
+| `callsign` | Your callsign, e.g. `N0CALL` or `N0CALL H` |
+| `hat` | `cc1200`, `sx1255` or `mmdvm`; also sets the usual serial speed (460800 for CC1200, 115200 for MMDVM) |
+| `modem_speed` | Serial speed to the HAT, if your board differs from the default for its type |
+| `frequency`, `rx_frequency`, `tx_frequency` | MHz (`439.5`) or Hz; `frequency` sets both |
+| `duplex`, `power` | `true`/`false`; transmit power in dBm |
+| `reflector`, `module` | e.g. `M17-M17`, `C` |
+| `dashboard_password` | Password for the dashboard's admin pages (8+ characters) |
+
+The full list with comments is in [`boot/m17-config.txt.sample`](boot/m17-config.txt.sample).
+
+The gateway settings go into `/etc/m17-gateway.ini`, the file the dashboard's Gateway page edits; everything else there can be changed on that page.
+
+## Updates
+
+```bash
+doas m17os-upgrade --check     # is there a newer release?
+doas m17os-upgrade --install   # install it to the other slot, then reboot
+m17os-slot-info                # which slot is running, versions, recent update events
+doas m17os-rollback            # go back to the previous slot
+```
+
+How it works:
+
+- The card has two root partitions. An update is written to the one that isn't running, and its kernel and device trees go to that slot's own directory on the boot partition (`slotA/`, `slotB/`). Switching slots means changing one line, `os_prefix=` in `config.txt`, so the running system is never modified.
+- After switching, the new slot is **pending**. On each boot the watchdog counts an attempt. Then the health check waits for the network (if one is configured), m17-gateway (if a callsign is set) and the dashboard. Hooks live in `/etc/m17os/health.d/`. If they pass, the slot is marked good. If they don't, the Pi reboots, and after three failed attempts it switches back to the previous slot.
+- Upgrades, pending boots, health check results and rollbacks are recorded in `/data/log/m17os-events.log`, which survives the reboots they cause.
+- `/data` holds everything that must survive an update: WiFi, SSH keys, the gateway configuration, the dashboard's settings and host files, home directories, and the `m17` password.
+- If a slot won't boot at all, put the card in a PC and change `os_prefix=slotA/` to `os_prefix=slotB/` (or the reverse) at the end of `config.txt`.
+
+Automatic, unattended updates are planned once releases are signed (see [Signing](#signing-releases)).
+
+## Hardware notes
+
+- The HAT uses the PL011 UART on GPIO 14/15 (`/dev/ttyAMA0`); Bluetooth is moved to the mini UART (`dtoverlay=miniuart-bt`), and no serial console is started.
+- **SX1255:** `hat=sx1255` (or `doas m17os-hat set sx1255`) enables I2S and the `genericstereoaudiocodec` overlay, then needs a reboot. Those pins (GPIO 18–21) are the CC1200 HAT's BOOT0/NRST lines, so the overlay is only enabled for the SX1255.
+- HAT firmware is not flashed automatically yet; `stm32flash` is installed for doing it by hand.
+
+## Building
+
+Images are built by GitHub Actions on arm64 runners ([`.github/workflows/build.yml`](.github/workflows/build.yml)): on every push and pull request (as a check), weekly when the kernel changes or the last release is a month old, and on demand. Releases are named `YYYY.MM.DD.N`.
+
+To build locally you need Linux (arm64, or x86 with qemu-user-static and binfmt) and root:
+
+```bash
+sudo apt-get install parted dosfstools e2fsprogs curl xz-utils zstd git rsync fdisk util-linux binutils
+sudo scripts/build-image.sh 2026.11.17.1 out
+```
+
+On a Mac, run the same thing in a privileged `debian:trixie` container (Docker or Colima). Component versions (Alpine, m17-gateway, rpi-dashboard) are pinned in [`build.conf`](build.conf).
+
+| Path | |
+|---|---|
+| `scripts/build-image.sh` | Partitions the image, installs Alpine, runs the chroot setup, builds slot A, writes the rootfs tarball and manifest |
+| `scripts/setup-rootfs.sh` | Runs inside the chroot: packages, services, users, gateway and dashboard |
+| `scripts/fetch-m17.sh` | Downloads m17-gateway, rpi-dashboard and the I2S overlay (until there is an M17 apk repository) |
+| `overlay/` | Files copied into the root filesystem: A/B tools, init scripts, nginx, doas |
+| `boot/` | `config.txt`, `slot.conf` and the `m17-config.txt` sample for the boot partition |
+| `tests/` | `unit.sh` (libraries and tools), `run-smoke.sh` (sets up the rootfs in a container and checks the result) |
+
+### Signing releases
+
+`m17os-upgrade` verifies a release's checksum. If `/etc/m17os/release.pub` exists, it also requires a valid [minisign](https://jedisct1.github.io/minisign/) signature on `manifest.txt`, which lists the rootfs checksum. To turn signing on:
+
+```bash
+minisign -G -W -p keys/release.pub -s release.key   # -W: no password, for CI
+```
+
+Commit `keys/release.pub` and add the contents of `release.key` as the repository secret `MINISIGN_SECRET_KEY`. Keep a copy of `release.key` offline. Images built after that only accept signed updates.
+
+## Differences from Pi-Star OS
+
+The A/B update system, boot configuration file and `/data` layout come from Pi-Star OS, renamed (`m17os-*`). Changes:
+
+- **aarch64**, so Zero 2 W and later only.
+- **Health check hooks** in `/etc/m17os/health.d/` instead of a built-in Pi-Star MCP check.
+- **Reboot on a failed health check**, so a slot that boots but isn't healthy still gets rolled back.
+- **An interrupted upgrade is noticed.** `slot.conf` is written before `config.txt` switches slots. If power fails in between, the watchdog sees that the old slot booted and clears the pending state, instead of marking a slot that never ran as good.
+- **`slot.conf` is parsed, not sourced.** It sits on a FAT partition anyone can edit.
+- **Optional minisign signatures** on the release manifest.
+- **M17 settings in the boot configuration file**, and a HAT tool for the SX1255's overlays.
+
+## Credits and license
+
+- [Pi-Star OS](https://github.com/MW0MWZ/Pi-Star_OS) and [RasPINE](https://github.com/MW0MWZ/RasPINE) by Andy Taylor, MW0MWZ, for the A/B update system, the boot configuration processor, the build approach and the Alpine + Raspberry Pi kernel base.
+- [m17-gateway](https://github.com/jancona/m17), [rpi-dashboard](https://github.com/M17-Project/rpi-dashboard) and the [hotspot installer](https://github.com/M17-Project/m17-hotspot-installer) from the M17 Project.
+
+GPL-2.0, like Pi-Star OS, from which parts of this repository are derived. See [LICENSE](LICENSE).

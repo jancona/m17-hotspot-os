@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# m17os-config - apply /boot/firmware/m17-config.txt before networking starts
+# Part of m17-hotspot-os. Based on Pi-Star OS (MW0MWZ), GPL-2.0.
+
+description="m17-hotspot-os boot configuration processor" # used by OpenRC
+
+depend() {
+	need localmount m17os-bindmounts
+	after modules
+	before networking wpa_supplicant dhcpcd dropbear m17-gateway
+}
+
+start() {
+	ebegin "Applying m17-hotspot-os configuration"
+	/usr/local/bin/m17os-config
+	rc=$?
+	if [ "$rc" -eq 3 ]; then
+		eend 0
+		ewarn "Rebooting to apply the new boot configuration"
+		sync
+		reboot
+		return 0
+	fi
+	eend "$rc"
+}

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Health hook: m17-gateway is running, if it is enabled and configured.
+# Exit 0 = healthy. On failure, print a short reason.
+
+rc-update show default 2>/dev/null | grep -q '^ *m17-gateway ' || exit 0
+grep -q '^[[:space:]]*Callsign[[:space:]]*=[[:space:]]*CALLSIGN_PLACEHOLDER' \
+	/etc/m17-gateway.ini 2>/dev/null && exit 0
+
+if ! rc-service m17-gateway status >/dev/null 2>&1; then
+	echo "service not started"
+	exit 1
+fi
+# pidof matches the process name; BusyBox pgrep -x does not
+if ! pidof m17-gateway >/dev/null; then
+	echo "process not running"
+	exit 1
+fi
+exit 0

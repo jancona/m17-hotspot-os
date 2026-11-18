@@ -1,0 +1,134 @@
+#!/bin/sh
+# m17os-hat - set up the system for a radio HAT type
+# Part of m17-hotspot-os.
+#
+# Usage: m17os-hat show
+#        m17os-hat set cc1200|sx1255|mmdvm
+#
+# "set" changes [Modem] Type in /etc/m17-gateway.ini and the HAT block in
+# /boot/firmware/config.txt. The SX1255 needs I2S and its audio codec
+# overlay; those claim GPIO 18-21, which the CC1200 HAT uses for BOOT0 and
+# NRST, so the overlay is only enabled for the SX1255.
+#
+# When the type changes, [Modem] Speed is set to that type's usual serial
+# speed: 460800 for the CC1200 HAT, 115200 for MMDVM hotspot boards (some
+# run at 460800; set Speed by hand for those). Setting the type it already
+# has leaves Speed alone, so a hand-tuned speed is kept.
+#
+# Exit codes: 0 = done, nothing more to do; 3 = done, reboot needed for the
+# config.txt change; 1 = error.
+
+set -e
+
+LIB_DIR="${M17OS_LIB:-/usr/local/lib/m17os}"
+FW_DIR="${M17OS_FW_DIR:-/boot/firmware}"
+GATEWAY_INI="${M17OS_GATEWAY_INI:-/etc/m17-gateway.ini}"
+CONFIG_TXT="$FW_DIR/config.txt"
+
+# shellcheck source=../lib/m17os/ini.sh
+. "$LIB_DIR/ini.sh"
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+# default_speed TYPE - the usual UART speed for TYPE ("" if it has no UART)
+default_speed() {
+	case "$1" in
+		cc1200*) echo 460800 ;;
+		mmdvm) echo 115200 ;;
+	esac
+}
+
+# hat_block TYPE - the config.txt lines TYPE needs (may be empty)
+hat_block() {
+	case "$1" in
+		sx1255)
+			echo "dtparam=i2s=on"
+			echo "dtoverlay=genericstereoaudiocodec"
+			;;
+	esac
+}
+
+# set_config_txt TYPE - rewrite the managed HAT block; returns 0 if
+# config.txt changed, 1 if it was already right
+set_config_txt() {
+	tmp="$CONFIG_TXT.tmp"
+	awk '
+		/^# >>> m17-hotspot-os radio HAT/ { skip = 1; next }
+		/^# <<< m17-hotspot-os radio HAT/ { skip = 0; next }
+		skip { next }
+		{ print }
+	' "$CONFIG_TXT" > "$tmp"
+
+	lines=$(hat_block "$1")
+	if [ -n "$lines" ]; then
+		# Keep the slot block (os_prefix) last: insert before it if present
+		block=$(printf '%s\n%s\n%s\n%s\n' \
+			"# >>> m17-hotspot-os radio HAT ($1, managed by m17os-hat)" \
+			"[all]" "$lines" "# <<< m17-hotspot-os radio HAT")
+		awk -v block="$block" '
+			/^# >>> m17-hotspot-os boot slot/ && !done { print block; done = 1 }
+			{ print }
+			END { if (!done) print block }
+		' "$tmp" > "$tmp.2"
+		mv "$tmp.2" "$tmp"
+	fi
+
+	if cmp -s "$tmp" "$CONFIG_TXT"; then
+		rm -f "$tmp"
+		return 1
+	fi
+	sync
+	mv "$tmp" "$CONFIG_TXT"
+	sync
+	return 0
+}
+
+current_type() {
+	ini_get "$GATEWAY_INI" Modem Type 2>/dev/null
+}
+
+case "$1" in
+	show)
+		echo "Gateway modem type: $(current_type)"
+		if grep -q '^# >>> m17-hotspot-os radio HAT' "$CONFIG_TXT" 2>/dev/null; then
+			echo "config.txt HAT block:"
+			sed -n '/^# >>> m17-hotspot-os radio HAT/,/^# <<< m17-hotspot-os radio HAT/p' "$CONFIG_TXT"
+		else
+			echo "config.txt HAT block: none"
+		fi
+		;;
+	set)
+		type=$(echo "$2" | tr '[:upper:]' '[:lower:]')
+		case "$type" in
+			cc1200|sx1255|mmdvm) ;;
+			*) die "HAT type must be cc1200, sx1255 or mmdvm" ;;
+		esac
+		[ "$(id -u)" -eq 0 ] || die "must be run as root"
+		[ -f "$GATEWAY_INI" ] || die "$GATEWAY_INI not found"
+		[ -f "$CONFIG_TXT" ] || die "$CONFIG_TXT not found"
+
+		# Keep a CC1200 variant such as cc1200v2
+		cur=$(current_type)
+		case "$type:$cur" in
+			cc1200:cc1200*) ;;
+			*)
+				ini_set "$GATEWAY_INI" Modem Type "$type"
+				speed=$(default_speed "$type")
+				if [ -n "$speed" ] && [ "$type" != "$cur" ]; then
+					ini_set "$GATEWAY_INI" Modem Speed "$speed"
+					echo "Modem speed set to $speed."
+				fi
+				;;
+		esac
+
+		if set_config_txt "$type"; then
+			echo "HAT set to $type. Reboot to apply the config.txt change."
+			exit 3
+		fi
+		echo "HAT set to $type."
+		;;
+	*)
+		echo "Usage: m17os-hat show | set cc1200|sx1255|mmdvm" >&2
+		exit 1
+		;;
+esac

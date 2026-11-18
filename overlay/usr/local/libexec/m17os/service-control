@@ -1,0 +1,24 @@
+#!/bin/sh
+# service-control - the privileged actions the web dashboard may perform
+# Part of m17-hotspot-os. Run as root through doas (see /etc/doas.d/m17os.conf).
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+case "$1:$2" in
+	start:m17-gateway|stop:m17-gateway|restart:m17-gateway|status:m17-gateway)
+		exec rc-service m17-gateway "$1"
+		;;
+	reboot:)
+		# Return to the caller first, so the dashboard can show its message
+		( sleep 2; reboot ) >/dev/null 2>&1 &
+		echo "Rebooting"
+		;;
+	poweroff:)
+		( sleep 2; poweroff ) >/dev/null 2>&1 &
+		echo "Shutting down"
+		;;
+	*)
+		echo "service-control: not allowed: $*" >&2
+		exit 1
+		;;
+esac

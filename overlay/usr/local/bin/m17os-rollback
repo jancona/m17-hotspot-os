@@ -1,0 +1,53 @@
+#!/bin/sh
+# m17os-rollback - switch back to the previous A/B slot
+# Part of m17-hotspot-os. Based on pistar-rollback from Pi-Star OS by Andy
+# Taylor, MW0MWZ (https://github.com/MW0MWZ/Pi-Star_OS), GPL-2.0.
+#
+# Usage: m17os-rollback [--force]   (--force reboots straight away)
+
+set -e
+
+LIB_DIR="${M17OS_LIB:-/usr/local/lib/m17os}"
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "must be run as root"
+
+# shellcheck source=../lib/m17os/bootslot.sh
+. "$LIB_DIR/bootslot.sh"
+
+read_slot_conf || die "$SLOT_CONF not found"
+
+FORCE=false
+[ "$1" = "--force" ] && FORCE=true
+
+BOOT_ACTIVE=$(active_slot)
+[ -n "$BOOT_ACTIVE" ] || die "config.txt has no os_prefix; the boot partition is not set up for A/B slots"
+
+TARGET="$PREVIOUS_SLOT"
+[ -n "$TARGET" ] || die "no previous slot to roll back to"
+[ "$TARGET" != "$BOOT_ACTIVE" ] || die "slot $TARGET is already the active slot"
+[ -f "$BOOTSLOT_FW_DIR/slot$TARGET/cmdline.txt" ] || \
+	die "no boot files for slot $TARGET in $BOOTSLOT_FW_DIR/slot$TARGET"
+
+echo "Rolling back from slot $BOOT_ACTIVE to slot $TARGET..."
+
+# The previous slot's kernel, device trees and overlays are intact, so
+# switching os_prefix is all it takes.
+set_active_slot "$TARGET" || die "could not update config.txt"
+
+ACTIVE_SLOT="$TARGET"
+PREVIOUS_SLOT="$BOOT_ACTIVE"
+PENDING=false
+BOOT_TRIES=0
+write_slot_conf
+
+slot_event "rollback: switched from slot $PREVIOUS_SLOT to slot $ACTIVE_SLOT"
+echo "Rollback to slot $ACTIVE_SLOT complete."
+
+if $FORCE; then
+	echo "Rebooting now..."
+	reboot
+else
+	echo "Reboot to activate it."
+fi

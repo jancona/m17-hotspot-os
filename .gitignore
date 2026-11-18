@@ -1,0 +1,6 @@
+out/
+*.img
+*.img.xz
+*.rootfs.tar.xz
+release.key
+*.key

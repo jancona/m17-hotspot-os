@@ -1,0 +1,76 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# m17os-bindmounts - bind mount persistent /data directories over the rootfs
+# Part of m17-hotspot-os. Based on pistar-bindmounts from Pi-Star OS by Andy
+# Taylor, MW0MWZ (https://github.com/MW0MWZ/Pi-Star_OS), GPL-2.0.
+#
+# Every /data/etc/<name>/ and /data/var/lib/<name>/ is bind-mounted over
+# /etc/<name>/ and /var/lib/<name>/ when the rootfs has that directory. An
+# empty /data directory is first seeded from the rootfs defaults, so a new
+# persistent directory only needs to exist in the rootfs and in
+# ENSURE_DIRS below.
+
+description="Bind mount /data/etc/* and /data/var/lib/* over /etc and /var/lib" # used by OpenRC
+
+PERSIST_ROOTS="etc var/lib"
+
+# Always persisted: created on /data when the rootfs has them, so systems
+# whose /data predates them pick them up too.
+ENSURE_DIRS="etc/dropbear etc/wpa_supplicant etc/dhcpcd etc/m17-gateway var/lib/m17-dashboard var/lib/m17os"
+
+depend() {
+	need localmount
+	before m17os-config networking wpa_supplicant dhcpcd dropbear
+}
+
+start() {
+	ebegin "Bind mounting persistent /data directories"
+
+	for dir in $ENSURE_DIRS; do
+		if [ -d "/$dir" ] && [ ! -d "/data/$dir" ]; then
+			mkdir -p "/data/$dir"
+		fi
+	done
+
+	for root in $PERSIST_ROOTS; do
+		for src in /data/"$root"/*/; do
+			[ -d "$src" ] || continue
+			name="${src%/}"
+			name="${name##*/}"
+			dest="/$root/$name"
+
+			# Skip if no matching rootfs directory
+			[ -d "$dest" ] || continue
+
+			# Seed empty /data dirs from rootfs defaults, keeping owners
+			if [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
+				cp -a "$dest/." "$src/"
+				chown "$(stat -c '%u:%g' "$dest")" "$src"
+				chmod "$(stat -c '%a' "$dest")" "$src"
+			fi
+
+			mount --bind "$src" "$dest"
+		done
+	done
+
+	eend 0
+}
+
+stop() {
+	ebegin "Unmounting persistent /data directories"
+
+	for root in $PERSIST_ROOTS; do
+		for src in /data/"$root"/*/; do
+			[ -d "$src" ] || continue
+			name="${src%/}"
+			name="${name##*/}"
+			dest="/$root/$name"
+
+			# /proc/mounts rather than mountpoint(1), which misses bind
+			# mounts from the same filesystem
+			grep -q " $dest " /proc/mounts && umount "$dest"
+		done
+	done
+
+	eend 0
+}

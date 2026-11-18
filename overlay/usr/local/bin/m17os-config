@@ -1,0 +1,374 @@
+#!/bin/sh
+# m17os-config - boot configuration processor
+# Part of m17-hotspot-os. Based on pistar-config from Pi-Star OS by Andy
+# Taylor, MW0MWZ (https://github.com/MW0MWZ/Pi-Star_OS), GPL-2.0.
+#
+# Sources, in priority order:
+#   1. /boot/firmware/m17-config.txt  - new settings from the user
+#   2. /data/m17os/user.conf          - settings saved on an earlier boot
+#
+# When m17-config.txt is present its settings are applied, the system
+# settings are saved to /data/m17os/user.conf so a new slot gets them after
+# an upgrade, and m17-config.txt is DELETED: it may contain passwords.
+#
+# WiFi, SSH keys and the gateway configuration live in persistent
+# directories on /data, so they are applied once and not saved here.
+#
+# Exit codes: 0 = done; 3 = done, reboot needed (a config.txt change).
+
+FW_DIR="${M17OS_FW_DIR:-/boot/firmware}"
+CONFIG_FILE="$FW_DIR/m17-config.txt"
+SAVED_DIR="${M17OS_SAVED_DIR:-/data/m17os}"
+SAVED_CONF="$SAVED_DIR/user.conf"
+LIB_DIR="${M17OS_LIB:-/usr/local/lib/m17os}"
+GATEWAY_INI="${M17OS_GATEWAY_INI:-/etc/m17-gateway.ini}"
+DASHBOARD_DIR="${M17OS_DASHBOARD_DIR:-/opt/m17/rpi-dashboard}"
+# On /data, not the /var/log tmpfs: processing the file can end in a
+# reboot, and the log is how to find out what happened
+LOG_FILE="$SAVED_DIR/config.log"
+USER_NAME="${M17OS_USER:-m17}"
+# Present once this slot's /etc/shadow has taken the saved password hash.
+# It lives on the slot's own /etc, so each newly installed slot restores
+# the hash once; after that the slot's hash is the current one.
+PW_MARKER="/etc/.m17os-password-restored"
+
+# shellcheck source=../lib/m17os/ini.sh
+. "$LIB_DIR/ini.sh"
+
+log() {
+	[ -d "$SAVED_DIR" ] || mkdir -p "$SAVED_DIR"
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+shadow_hash() {
+	sed -n "s/^$USER_NAME:\([^:]*\):.*/\1/p" /etc/shadow
+}
+
+save_conf() {
+	mkdir -p "$SAVED_DIR"
+	umask 077
+	cat > "$SAVED_CONF.tmp" <<EOF
+# m17-hotspot-os saved system configuration
+# Generated: $(date '+%Y-%m-%d %H:%M:%S')
+# Do not edit: rewritten when m17-config.txt is processed.
+user_password_hash=$(shadow_hash)
+enable_ssh_password=${SAVE_SSH_PASSWORD:-false}
+hostname=${SAVE_HOSTNAME}
+timezone=${SAVE_TIMEZONE}
+EOF
+	mv "$SAVED_CONF.tmp" "$SAVED_CONF"
+}
+
+# mhz_to_hz VALUE - accept 439.5 / 439.500 (MHz) or 439500000 (Hz)
+mhz_to_hz() {
+	case "$1" in
+		*[!0-9.]*|"") return 1 ;;
+		*.*) awk -v f="$1" 'BEGIN { printf "%.0f\n", f * 1000000 }' ;;
+		*) if [ "$1" -lt 10000 ]; then echo $(( $1 * 1000000 )); else echo "$1"; fi ;;
+	esac
+}
+
+gateway_set() {
+	if [ ! -f "$GATEWAY_INI" ]; then
+		log "WARNING: $GATEWAY_INI not found, cannot set $2"
+		return
+	fi
+	ini_set "$GATEWAY_INI" "$1" "$2" "$3" && GATEWAY_CHANGED=true
+}
+
+# ── Phase 1: source selection ─────────────────────────────────────────
+if [ -f "$CONFIG_FILE" ]; then
+	SOURCE="$CONFIG_FILE"
+	FROM_CONFIG_TXT=true
+	log "Processing m17-config.txt..."
+elif [ -f "$SAVED_CONF" ]; then
+	SOURCE="$SAVED_CONF"
+	FROM_CONFIG_TXT=false
+else
+	# Nothing to apply. Still record the current password hash so that a
+	# password changed later survives A/B upgrades, which bring a fresh
+	# /etc/shadow.
+	SAVE_HOSTNAME=$(cat /etc/hostname 2>/dev/null)
+	save_conf
+	touch "$PW_MARKER"
+	exit 0
+fi
+
+# ── Phase 2: parse and apply ──────────────────────────────────────────
+WIFI_COUNT=0
+REBOOT=false
+GATEWAY_CHANGED=false
+MODEM_SPEED=""
+SAVE_HOSTNAME=""
+SAVE_TIMEZONE=""
+SAVE_SSH_PASSWORD=""
+
+# Read from a copy without CRs: the file is often written on Windows
+SRC_COPY=$(mktemp)
+tr -d '\r' < "$SOURCE" > "$SRC_COPY"
+
+while IFS='=' read -r key value; do
+	case "$key" in
+		"#"*|"") continue ;;
+	esac
+	key=$(echo "$key" | tr -d ' \t')
+	value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+	# Unset settings (e.g. "hostname=" in the saved file) change nothing
+	[ -n "$value" ] || continue
+
+	case "$key" in
+		# ── system ──
+		wifi_ssid|wifi_ssid_*)
+			if $FROM_CONFIG_TXT; then
+				priority=$(echo "$key" | sed 's/wifi_ssid_*//')
+				[ -z "$priority" ] && priority=1
+				case "$priority" in [1-9]|10) ;; *) log "Ignoring $key"; continue ;; esac
+				eval "WIFI_SSID_${priority}=\$value"
+				WIFI_COUNT=$((WIFI_COUNT + 1))
+				log "Found WiFi network: $value (priority $priority)"
+			fi
+			;;
+		wifi_password|wifi_password_*)
+			if $FROM_CONFIG_TXT; then
+				priority=$(echo "$key" | sed 's/wifi_password_*//')
+				[ -z "$priority" ] && priority=1
+				case "$priority" in [1-9]|10) ;; *) continue ;; esac
+				eval "WIFI_PASS_${priority}=\$value"
+			fi
+			;;
+		wifi_country)
+			$FROM_CONFIG_TXT && WIFI_COUNTRY="$value"
+			;;
+		user_password)
+			if $FROM_CONFIG_TXT; then
+				log "Setting $USER_NAME user password"
+				echo "$USER_NAME:$value" | chpasswd
+			fi
+			;;
+		user_password_hash)
+			# Saved config only. On a slot's first boot restore the saved
+			# hash; afterwards keep the saved copy in step with the slot's
+			# hash so changes made with passwd also survive upgrades.
+			if ! $FROM_CONFIG_TXT; then
+				if [ ! -f "$PW_MARKER" ]; then
+					log "Restoring $USER_NAME password hash"
+					awk -v u="$USER_NAME" -v h="$value" 'BEGIN { FS = OFS = ":" } $1 == u { $2 = h } { print }' \
+						/etc/shadow > /etc/shadow.tmp && chmod 0640 /etc/shadow.tmp && \
+						chgrp shadow /etc/shadow.tmp 2>/dev/null; mv /etc/shadow.tmp /etc/shadow
+					touch "$PW_MARKER"
+				fi
+			fi
+			;;
+		enable_ssh_password)
+			SAVE_SSH_PASSWORD="$value"
+			if [ "$value" = "true" ]; then
+				$FROM_CONFIG_TXT && log "Enabling SSH password authentication"
+				sed -i 's/^DROPBEAR_OPTS=.*/DROPBEAR_OPTS="-B"/' /etc/conf.d/dropbear
+			else
+				$FROM_CONFIG_TXT && log "SSH key-only authentication"
+				sed -i 's/^DROPBEAR_OPTS=.*/DROPBEAR_OPTS="-B -s"/' /etc/conf.d/dropbear
+			fi
+			;;
+		ssh_key)
+			if $FROM_CONFIG_TXT; then
+				log "Adding SSH public key"
+				home="/home/$USER_NAME"
+				mkdir -p "$home/.ssh"
+				echo "$value" >> "$home/.ssh/authorized_keys"
+				chmod 700 "$home/.ssh"
+				chmod 600 "$home/.ssh/authorized_keys"
+				chown -R "$USER_NAME:$USER_NAME" "$home/.ssh"
+			fi
+			;;
+		hostname)
+			case "$value" in
+				*[!A-Za-z0-9-]*|-*) log "WARNING: invalid hostname '$value'"; continue ;;
+			esac
+			SAVE_HOSTNAME="$value"
+			if [ "$(cat /etc/hostname 2>/dev/null)" != "$value" ]; then
+				log "Setting hostname: $value"
+				echo "$value" > /etc/hostname
+				hostname "$value"
+				sed -i "s/^127\.0\.1\.1.*/127.0.1.1   $value/" /etc/hosts
+			fi
+			;;
+		timezone)
+			if [ -f "/usr/share/zoneinfo/$value" ]; then
+				SAVE_TIMEZONE="$value"
+				if [ "$(cat /etc/timezone 2>/dev/null)" != "$value" ]; then
+					log "Setting timezone: $value"
+					cp "/usr/share/zoneinfo/$value" /etc/localtime
+					echo "$value" > /etc/timezone
+				fi
+			else
+				log "WARNING: timezone '$value' not found"
+			fi
+			;;
+
+		# ── M17 (config file only: the gateway ini is persistent) ──
+		callsign)
+			if $FROM_CONFIG_TXT; then
+				value=$(echo "$value" | tr '[:lower:]' '[:upper:]')
+				case "$value" in
+					*[!A-Z0-9/.\ -]*) log "WARNING: invalid callsign '$value'"; continue ;;
+				esac
+				log "Setting callsign: $value"
+				gateway_set General Callsign "$value"
+			fi
+			;;
+		hat|modem_type)
+			if $FROM_CONFIG_TXT; then
+				log "Setting HAT type: $value"
+				M17OS_GATEWAY_INI="$GATEWAY_INI" /usr/local/bin/m17os-hat set "$value" >> "$LOG_FILE" 2>&1
+				case $? in
+					0) GATEWAY_CHANGED=true ;;
+					3) GATEWAY_CHANGED=true; REBOOT=true ;;
+					*) log "WARNING: could not set HAT type '$value'" ;;
+				esac
+			fi
+			;;
+		modem_speed)
+			# Applied after the loop, so it wins over the HAT type's
+			# default speed wherever it appears in the file
+			if $FROM_CONFIG_TXT; then
+				case "$value" in
+					*[!0-9]*) log "WARNING: invalid modem_speed '$value'" ;;
+					*) MODEM_SPEED="$value" ;;
+				esac
+			fi
+			;;
+		rx_frequency|tx_frequency)
+			if $FROM_CONFIG_TXT; then
+				if hz=$(mhz_to_hz "$value"); then
+					log "Setting $key: $hz Hz"
+					case "$key" in
+						rx_frequency) gateway_set Radio RXFrequency "$hz" ;;
+						tx_frequency) gateway_set Radio TXFrequency "$hz" ;;
+					esac
+				else
+					log "WARNING: invalid $key '$value'"
+				fi
+			fi
+			;;
+		frequency)
+			if $FROM_CONFIG_TXT; then
+				if hz=$(mhz_to_hz "$value"); then
+					log "Setting frequency (RX and TX): $hz Hz"
+					gateway_set Radio RXFrequency "$hz"
+					gateway_set Radio TXFrequency "$hz"
+				else
+					log "WARNING: invalid frequency '$value'"
+				fi
+			fi
+			;;
+		duplex)
+			if $FROM_CONFIG_TXT; then
+				case "$value" in
+					true|false) gateway_set Radio Duplex "$value" ;;
+					*) log "WARNING: duplex must be true or false" ;;
+				esac
+			fi
+			;;
+		power)
+			if $FROM_CONFIG_TXT; then
+				case "$value" in
+					*[!0-9-]*) log "WARNING: invalid power '$value'" ;;
+					*) gateway_set Radio Power "$value" ;;
+				esac
+			fi
+			;;
+		reflector)
+			if $FROM_CONFIG_TXT; then
+				case "$value" in
+					*[!A-Za-z0-9_-]*) log "WARNING: invalid reflector '$value'" ;;
+					*) log "Setting reflector: $value"; gateway_set Reflector Name "$value" ;;
+				esac
+			fi
+			;;
+		module)
+			if $FROM_CONFIG_TXT; then
+				value=$(echo "$value" | tr '[:lower:]' '[:upper:]')
+				case "$value" in
+					[A-Z]) gateway_set Reflector Module "$value" ;;
+					*) log "WARNING: module must be a single letter A-Z" ;;
+				esac
+			fi
+			;;
+		dashboard_password)
+			if $FROM_CONFIG_TXT; then
+				if [ "${#value}" -lt 8 ]; then
+					log "WARNING: dashboard_password must be at least 8 characters"
+				elif printf '%s\n' "$value" | \
+					su -s /bin/sh www-data -c "php84 $DASHBOARD_DIR/set_password.php" >/dev/null 2>&1; then
+					log "Dashboard admin password set"
+				else
+					log "WARNING: could not set the dashboard password"
+				fi
+			fi
+			;;
+	esac
+done < "$SRC_COPY"
+rm -f "$SRC_COPY"
+
+if [ -n "${MODEM_SPEED:-}" ]; then
+	log "Setting modem speed: $MODEM_SPEED"
+	gateway_set Modem Speed "$MODEM_SPEED"
+fi
+
+# Build the wpa_supplicant configuration (config file only)
+if [ "$WIFI_COUNT" -gt 0 ]; then
+	WPA_CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
+	log "Writing $WPA_CONF"
+	umask 077
+	cat > "$WPA_CONF" <<EOF
+ctrl_interface=/var/run/wpa_supplicant
+ctrl_interface_group=0
+update_config=1
+country=${WIFI_COUNTRY:-US}
+EOF
+	for i in 10 9 8 7 6 5 4 3 2 1; do
+		eval "ssid=\$WIFI_SSID_${i}"
+		eval "pass=\$WIFI_PASS_${i}"
+		[ -n "$ssid" ] || continue
+		if [ -n "$pass" ]; then
+			wpa_passphrase "$ssid" "$pass" | sed '/^[[:space:]]*#psk=/d' | \
+				sed "s/^}/\tpriority=$i\n}/" >> "$WPA_CONF"
+		else
+			printf 'network={\n\tssid="%s"\n\tkey_mgmt=NONE\n\tpriority=%s\n}\n' "$ssid" "$i" >> "$WPA_CONF"
+		fi
+		log "Added WiFi network: $ssid (priority $i)"
+	done
+	umask 022
+elif [ -n "$WIFI_COUNTRY" ] && [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
+	sed -i "s/^country=.*/country=$WIFI_COUNTRY/" /etc/wpa_supplicant/wpa_supplicant.conf
+fi
+
+# ── Phase 3: save and clean up (config file only) ─────────────────────
+if $FROM_CONFIG_TXT; then
+	save_conf
+	touch "$PW_MARKER"
+	rm -f "$CONFIG_FILE"
+	sync
+	log "Configuration complete - m17-config.txt deleted."
+	if $GATEWAY_CHANGED; then
+		log "Gateway settings changed"
+	fi
+else
+	# Keep the saved hash in step with the slot's, so a password changed
+	# with passwd also survives the next upgrade
+	saved=$(sed -n 's/^user_password_hash=//p' "$SAVED_CONF")
+	current=$(shadow_hash)
+	if [ -n "$current" ] && [ "$current" != "$saved" ]; then
+		SAVE_HOSTNAME=$(cat /etc/hostname 2>/dev/null)
+		SAVE_TIMEZONE=$(cat /etc/timezone 2>/dev/null)
+		SAVE_SSH_PASSWORD=$(sed -n 's/^enable_ssh_password=//p' "$SAVED_CONF")
+		save_conf
+		log "Saved the changed $USER_NAME password hash"
+	fi
+fi
+
+if $REBOOT; then
+	log "Reboot needed to apply config.txt changes"
+	exit 3
+fi
+exit 0

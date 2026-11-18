@@ -1,0 +1,233 @@
+#!/bin/sh
+# smoke-rootfs.sh - set up the m17-hotspot-os root filesystem inside a
+# throwaway Alpine container and check that it works as far as a container
+# allows (no boot, kernel or hardware).
+#
+# Run with tests/run-smoke.sh, which starts the container. DO NOT run this
+# on a real system: it rewrites /etc.
+
+set -u
+
+[ -f /.dockerenv ] || [ -n "${M17OS_SMOKE_OK:-}" ] || {
+	echo "Refusing to run outside a container" >&2; exit 2; }
+
+REPO=/repo
+. "$REPO/build.conf"
+
+: > /tmp/pass
+: > /tmp/fail
+ok()   { echo . >> /tmp/pass; }
+fail() { echo . >> /tmp/fail; echo "FAIL: $*"; }
+check() { if [ "$2" = "$3" ]; then ok; else fail "$1: expected '$2', got '$3'"; fi; }
+section() { echo; echo "── $* ──"; }
+
+section "Build tools"
+apk add --no-cache git curl zstd binutils rsync socat >/dev/null || { echo "apk add failed"; exit 1; }
+
+section "Fetch M17 components"
+sh "$REPO/scripts/fetch-m17.sh" /tmp/m17-stage || { echo "fetch-m17.sh failed"; exit 1; }
+
+section "Apply overlay and run setup-rootfs.sh"
+rsync -a --chown=root:root "$REPO/overlay/" /
+mkdir -p /boot/firmware/overlays
+env ALPINE_VERSION="$ALPINE_VERSION" RASPINE_REPO="$RASPINE_REPO" \
+	DEFAULT_HOSTNAME="$DEFAULT_HOSTNAME" DEFAULT_USER="$DEFAULT_USER" \
+	DEFAULT_PASSWORD="$DEFAULT_PASSWORD" DEFAULT_WIFI_COUNTRY="$DEFAULT_WIFI_COUNTRY" \
+	sh -e "$REPO/scripts/setup-rootfs.sh" > /tmp/setup.log 2>&1
+rc=$?
+tail -5 /tmp/setup.log
+if [ "$rc" -ne 0 ]; then
+	echo "setup-rootfs.sh failed ($rc):"; tail -40 /tmp/setup.log; exit 1
+fi
+
+section "Packages and boot files"
+for p in raspios-kernel-v8 raspios-kernel-2712 raspios-firmware nginx php84-fpm doas minisign avahi stm32flash; do
+	apk info -e "$p" >/dev/null && ok || fail "package $p not installed"
+done
+for f in kernel8.img kernel_2712.img cmdline.txt overlays/genericstereoaudiocodec.dtbo; do
+	[ -e "/boot/firmware/$f" ] && ok || fail "/boot/firmware/$f missing"
+done
+ls /boot/firmware/start*.elf >/dev/null 2>&1 && ok || fail "GPU firmware (start*.elf) missing"
+ls /boot/firmware/bcm2710-rpi-zero-2-w.dtb /boot/firmware/bcm2712-rpi-5-b.dtb >/dev/null 2>&1 && ok || \
+	fail "device trees for Zero 2 W / Pi 5 missing"
+[ -L /lib/modules ] && [ -n "$(ls -A /lib/modules/)" ] && ok || fail "/lib/modules not populated"
+
+section "Services"
+for s in m17os-data-resize m17os-bindmounts m17os-config m17os-boot-watchdog wpa_supplicant dhcpcd; do
+	[ -L "/etc/runlevels/boot/$s" ] && ok || fail "$s not in boot runlevel"
+done
+for s in dropbear crond avahi-daemon php-fpm84 nginx m17-gateway m17os-health-check; do
+	[ -L "/etc/runlevels/default/$s" ] && ok || fail "$s not in default runlevel"
+done
+
+section "Users and permissions"
+id m17 | grep -q wheel && ok || fail "m17 not in wheel"
+id m17-gateway | grep -q dialout && id m17-gateway | grep -q spi && id m17-gateway | grep -q gpio && ok || \
+	fail "m17-gateway groups: $(id m17-gateway)"
+id www-data | grep -q m17-gateway-control && ok || fail "www-data not in m17-gateway-control"
+grep -q '^root:!' /etc/shadow && ok || fail "root not locked"
+grep -q 'ttyAMA\[0-9\]\*.*root:dialout' /etc/mdev.conf && ok || fail "mdev rule for ttyAMA missing"
+
+section "Gateway"
+/opt/m17/m17-gateway/m17-gateway -h > /tmp/gw-help 2>&1
+grep -qi 'config' /tmp/gw-help && ok || fail "m17-gateway -h: $(head -3 /tmp/gw-help)"
+check "ini symlink" "m17-gateway/m17-gateway.ini" "$(readlink /etc/m17-gateway.ini)"
+. /usr/local/lib/m17os/ini.sh
+check "DashboardLog" /var/log/m17-gateway/dashboard.log "$(ini_get /etc/m17-gateway.ini General DashboardLog)"
+check "HostFile" /opt/m17/rpi-dashboard/files/M17Hosts.txt "$(ini_get /etc/m17-gateway.ini Reflector HostFile)"
+check "Log level" INFO "$(ini_get /etc/m17-gateway.ini Log Level)"
+[ -s /opt/m17/rpi-dashboard/files/M17Hosts.txt ] && ok || fail "host file not reachable through the dashboard"
+su -s /bin/sh www-data -c 'test -w /etc/m17-gateway.ini' && ok || fail "www-data cannot write the gateway ini"
+su -s /bin/sh www-data -c 'test -w /opt/m17/rpi-dashboard/index.php' && fail "www-data can write dashboard code" || ok
+
+section "Web dashboard (nginx + php-fpm)"
+nginx -t 2>/tmp/nginx-t && ok || fail "nginx -t: $(cat /tmp/nginx-t)"
+php-fpm84 -t 2>/tmp/fpm-t && ok || fail "php-fpm84 -t: $(cat /tmp/fpm-t)"
+mkdir -p /var/log/m17-gateway /run/nginx
+chown m17-gateway:m17-gateway /var/log/m17-gateway
+php-fpm84 -D && nginx && sleep 1
+wget -q -O /tmp/index.html http://127.0.0.1/index.php && ok || fail "dashboard index.php did not load"
+grep -qi 'm17' /tmp/index.html && ok || fail "index.php does not look like the dashboard"
+wget -q -O /dev/null http://127.0.0.1/files/M17Hosts.txt && fail "files/ is served" || ok
+wget -q -O /dev/null http://127.0.0.1/config.php && fail "config.php is served" || ok
+grep -q "admin_password_hash" /var/lib/m17-dashboard/config.php && ok || fail "dashboard did not write its config.php"
+[ -L /opt/m17/rpi-dashboard/config.php ] && ok || fail "config.php symlink was replaced"
+/etc/m17os/health.d/60-dashboard >/dev/null 2>&1; check "dashboard health hook" 0 "$?"
+
+section "systemctl stand-in (as www-data, through doas)"
+out=$(su -s /bin/sh www-data -c 'PATH=/usr/local/bin:/usr/bin:/bin; systemctl bogus 2>&1'); rc=$?
+check "unsupported action fails" 1 "$rc"
+out=$(su -s /bin/sh www-data -c 'PATH=/usr/local/bin:/usr/bin:/bin; systemctl restart nginx.service 2>&1'); rc=$?
+check "other units refused" 1 "$rc"
+out=$(su -s /bin/sh www-data -c 'doas -n /bin/sh -c id 2>&1'); rc=$?
+[ "$rc" -ne 0 ] && ok || fail "www-data can run arbitrary commands through doas: $out"
+out=$(su -s /bin/sh www-data -c 'doas -n /usr/local/libexec/m17os/service-control bogus 2>&1'); rc=$?
+case "$out" in *"not allowed"*) ok ;; *) fail "doas rule for service-control: $out" ;; esac
+check "doas.d permissions" 600 "$(stat -c %a /etc/doas.d/m17os.conf)"
+
+section "m17os-config (boot configuration file)"
+cat > /boot/firmware/m17-config.txt <<'EOF'
+# test
+hostname=test-hotspot
+timezone=America/New_York
+user_password=secret-pass
+enable_ssh_password=true
+ssh_key=ssh-ed25519 AAAATEST test@example
+wifi_ssid=HomeNet
+wifi_password=homepassword
+wifi_ssid_2=Phone
+wifi_password_2=phonepassword
+wifi_country=GB
+callsign=n0call b
+hat=cc1200
+frequency=439.5
+tx_frequency=434750000
+duplex=false
+power=12
+reflector=M17-XOR
+module=b
+dashboard_password=dashpass123
+EOF
+printf 'hostname=test-hotspot\r\n' >> /boot/firmware/m17-config.txt
+mkdir -p /data/m17os /etc/conf.d
+echo 'DROPBEAR_OPTS="-B -s"' > /etc/conf.d/dropbear
+cp "$REPO/boot/config.txt" /boot/firmware/config.txt
+sh /usr/local/bin/m17os-config > /tmp/config.log 2>&1
+check "m17os-config exit" 0 "$?"
+[ -e /boot/firmware/m17-config.txt ] && fail "m17-config.txt not deleted" || ok
+check "hostname" test-hotspot "$(cat /etc/hostname)"
+check "timezone" America/New_York "$(cat /etc/timezone)"
+grep -q 'DROPBEAR_OPTS="-B"' /etc/conf.d/dropbear && ok || fail "ssh password not enabled"
+grep -q 'AAAATEST' /home/m17/.ssh/authorized_keys && ok || fail "ssh key not added"
+check "wifi country" GB "$(sed -n 's/^country=//p' /etc/wpa_supplicant/wpa_supplicant.conf)"
+check "wifi networks" 2 "$(grep -c 'ssid=' /etc/wpa_supplicant/wpa_supplicant.conf)"
+grep -q 'priority=2' /etc/wpa_supplicant/wpa_supplicant.conf && ok || fail "wifi priority missing"
+grep -q '#psk=' /etc/wpa_supplicant/wpa_supplicant.conf && fail "plaintext WiFi password kept" || ok
+check "callsign" "N0CALL B" "$(ini_get /etc/m17-gateway.ini General Callsign)"
+check "rx frequency" 439500000 "$(ini_get /etc/m17-gateway.ini Radio RXFrequency)"
+check "tx frequency" 434750000 "$(ini_get /etc/m17-gateway.ini Radio TXFrequency)"
+check "power" 12 "$(ini_get /etc/m17-gateway.ini Radio Power)"
+check "reflector" M17-XOR "$(ini_get /etc/m17-gateway.ini Reflector Name)"
+check "module" B "$(ini_get /etc/m17-gateway.ini Reflector Module)"
+check "modem type" cc1200 "$(ini_get /etc/m17-gateway.ini Modem Type)"
+check "ini still a symlink" "m17-gateway/m17-gateway.ini" "$(readlink /etc/m17-gateway.ini)"
+check "ini owner" "m17-gateway:m17-gateway-control" "$(stat -c %U:%G /etc/m17-gateway/m17-gateway.ini)"
+grep -q "admin_password_hash' => '[$]" /var/lib/m17-dashboard/config.php && ok || \
+	fail "dashboard password not set: $(grep -i password /tmp/config.log)"
+grep -q '^user_password_hash=\$' /data/m17os/user.conf && ok || fail "password hash not saved"
+check "user.conf mode" 600 "$(stat -c %a /data/m17os/user.conf)"
+grep -q 'secret-pass\|homepassword\|dashpass123' /data/m17os/user.conf /data/m17os/config.log && \
+	fail "a plaintext password was saved or logged" || ok
+
+section "m17os-config: HAT change needs a reboot"
+printf 'hat=sx1255\n' > /boot/firmware/m17-config.txt
+sh /usr/local/bin/m17os-config > /tmp/config2.log 2>&1
+check "exit 3 for reboot" 3 "$?"
+grep -q '^dtoverlay=genericstereoaudiocodec' /boot/firmware/config.txt && ok || fail "SX1255 overlay not enabled"
+
+section "m17os-config: MMDVM speed, and modem_speed wins wherever it is"
+printf 'hat=mmdvm\n' > /boot/firmware/m17-config.txt
+sh /usr/local/bin/m17os-config > /tmp/config2b.log 2>&1
+check "mmdvm type" mmdvm "$(ini_get /etc/m17-gateway.ini Modem Type)"
+check "mmdvm default speed" 115200 "$(ini_get /etc/m17-gateway.ini Modem Speed)"
+printf 'modem_speed=460800\nhat=cc1200\n' > /boot/firmware/m17-config.txt
+sh /usr/local/bin/m17os-config > /tmp/config2c.log 2>&1
+printf 'modem_speed=57600\nhat=mmdvm\n' > /boot/firmware/m17-config.txt
+sh /usr/local/bin/m17os-config > /tmp/config2d.log 2>&1
+check "modem_speed before hat wins" 57600 "$(ini_get /etc/m17-gateway.ini Modem Speed)"
+check "ini owner after edits" "m17-gateway:m17-gateway-control" "$(stat -c %U:%G /etc/m17-gateway/m17-gateway.ini)"
+
+section "m17os-config: saved settings restore the password on a new slot"
+hash=$(sed -n 's/^user_password_hash=//p' /data/m17os/user.conf)
+echo "m17:changed" | chpasswd
+rm -f /etc/.m17os-password-restored
+sh /usr/local/bin/m17os-config > /tmp/config3.log 2>&1
+check "restored hash" "$hash" "$(sed -n 's/^m17:\([^:]*\):.*/\1/p' /etc/shadow)"
+echo "m17:changed-again" | chpasswd
+sh /usr/local/bin/m17os-config > /tmp/config4.log 2>&1
+check "changed hash saved" "$(sed -n 's/^m17:\([^:]*\):.*/\1/p' /etc/shadow)" "$(sed -n 's/^user_password_hash=//p' /data/m17os/user.conf)"
+
+section "Boot with an empty /var/log (it is a tmpfs on the Pi)"
+grep -q ' /var/log/nginx$' /etc/m17os/var-log-dirs && ok || fail "var-log-dirs has no /var/log/nginx"
+grep -q ' /var/log/php84$' /etc/m17os/var-log-dirs && ok || fail "var-log-dirs has no /var/log/php84"
+[ -L /etc/runlevels/boot/m17os-varlog ] && ok || fail "m17os-varlog not in boot runlevel"
+nginx -s stop 2>/dev/null; pkill php-fpm84 2>/dev/null; sleep 1
+mv /var/log /var/log.saved && mkdir /var/log
+nginx -t >/dev/null 2>&1 && fail "nginx -t passes without /var/log/nginx: the test can't show the fix" || ok
+( ebegin() { :; }; eend() { return "${1:-0}"; }; . /etc/init.d/m17os-varlog; start ) \
+	&& ok || fail "m17os-varlog start failed"
+check "nginx log dir owner" "$(awk '$3 == "/var/log/nginx" { print $2 }' /etc/m17os/var-log-dirs)" "$(stat -c %U:%G /var/log/nginx)"
+nginx -t 2>/tmp/nginx-t2 && ok || fail "nginx -t after m17os-varlog: $(cat /tmp/nginx-t2)"
+php-fpm84 -t 2>/tmp/fpm-t2 && ok || fail "php-fpm84 -t after m17os-varlog: $(cat /tmp/fpm-t2)"
+mkdir -p /run/nginx
+php-fpm84 -D && nginx && sleep 1
+wget -q -O /dev/null http://127.0.0.1/index.php && ok || fail "dashboard did not load after m17os-varlog"
+rm -rf /var/log && mv /var/log.saved /var/log
+
+section "Running gateway is found (dashboard status, health hook)"
+socat pty,link=/tmp/ttyV0,raw,mode=666 pty,link=/tmp/ttyV1,raw & SOCAT=$!
+sleep 1
+chmod 666 "$(readlink -f /tmp/ttyV0)"
+sed -e 's/^Callsign=.*/Callsign=N0CALL/' -e 's|^Type=.*|Type=mmdvm|' -e 's|^Port=.*|Port=/tmp/ttyV0|' \
+	/etc/m17-gateway.ini > /tmp/gw-test.ini
+chmod 644 /tmp/gw-test.ini
+su -s /bin/sh m17-gateway -c 'cd /opt/m17/m17-gateway && exec ./m17-gateway -config /tmp/gw-test.ini' >/tmp/gw-test.log 2>&1 &
+GW=$!
+sleep 2
+kill -0 "$GW" 2>/dev/null && ok || fail "test gateway exited: $(tail -2 /tmp/gw-test.log)"
+check "pgrep is procps" /usr/bin/pgrep "$(readlink -f "$(command -v pgrep)")"
+su -s /bin/sh www-data -c 'pgrep -x m17-gateway' >/dev/null && ok || fail "pgrep -x (as the dashboard) does not find the gateway"
+pidof m17-gateway >/dev/null && ok || fail "pidof does not find the gateway"
+wget -q -O /tmp/status.json http://127.0.0.1/get_status.php && ok || fail "get_status.php failed"
+grep -q '"gateway_status":"Running"' /tmp/status.json && ok || fail "dashboard status: $(head -c 200 /tmp/status.json)"
+kill "$GW" "$SOCAT" 2>/dev/null
+
+section "Gateway health hook"
+/etc/m17os/health.d/50-m17-gateway >/tmp/hook 2>&1
+check "hook fails when the gateway is not running" 1 "$?"
+
+PASS=$(wc -l < /tmp/pass | tr -d ' ')
+FAIL=$(wc -l < /tmp/fail | tr -d ' ')
+echo
+echo "smoke: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

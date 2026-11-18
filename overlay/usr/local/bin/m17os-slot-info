@@ -1,0 +1,48 @@
+#!/bin/sh
+# m17os-slot-info - show the A/B slot status
+# Part of m17-hotspot-os. Based on pistar-slot-info from Pi-Star OS (MW0MWZ),
+# GPL-2.0.
+#
+# Usage: m17os-slot-info [--json]
+
+LIB_DIR="${M17OS_LIB:-/usr/local/lib/m17os}"
+OS_RELEASE="${M17OS_RELEASE:-/etc/m17os-release}"
+
+# shellcheck source=../lib/m17os/bootslot.sh
+. "$LIB_DIR/bootslot.sh"
+
+if ! read_slot_conf; then
+	echo "Error: $SLOT_CONF not found" >&2
+	exit 1
+fi
+
+BOOT_SLOT=$(active_slot)
+RUNNING=$(sed -n 's/^Version:[[:space:]]*//p' "$OS_RELEASE" 2>/dev/null | head -1)
+
+if [ "$1" = "--json" ]; then
+	printf '{"boot_slot":"%s","active_slot":"%s","previous_slot":"%s","pending":%s,"boot_tries":%s,"slot_a_version":"%s","slot_b_version":"%s","running_version":"%s"}\n' \
+		"$BOOT_SLOT" "$ACTIVE_SLOT" "$PREVIOUS_SLOT" "$PENDING" "$BOOT_TRIES" \
+		"$SLOT_A_VERSION" "$SLOT_B_VERSION" "$RUNNING"
+	exit 0
+fi
+
+if [ "$PENDING" = "true" ]; then
+	status="PENDING (boot try $BOOT_TRIES)"
+else
+	status="OK"
+fi
+
+echo "m17-hotspot-os slot information"
+echo "Running:      ${RUNNING:-unknown}"
+echo "Boot slot:    ${BOOT_SLOT:-none} (os_prefix in config.txt)"
+echo "Active slot:  ${ACTIVE_SLOT:-?}"
+echo "Slot A:       ${SLOT_A_VERSION:-not installed}"
+echo "Slot B:       ${SLOT_B_VERSION:-not installed}"
+echo "Status:       $status"
+[ -n "$PREVIOUS_SLOT" ] && echo "Previous:     $PREVIOUS_SLOT"
+if [ -r "$SLOT_EVENT_LOG" ]; then
+	echo ""
+	echo "Recent events ($SLOT_EVENT_LOG):"
+	tail -n 5 "$SLOT_EVENT_LOG" | sed 's/^/  /'
+fi
+exit 0

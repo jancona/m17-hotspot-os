@@ -1,0 +1,217 @@
+#!/bin/sh
+# m17os-upgrade - download and install an OS update to the inactive A/B slot
+# Part of m17-hotspot-os. Based on pistar-upgrade from Pi-Star OS by Andy
+# Taylor, MW0MWZ (https://github.com/MW0MWZ/Pi-Star_OS), GPL-2.0.
+#
+# Exit codes: 0 = success (--check: update available), 1 = --check: up to
+# date, 2 = error. Errors must not use 1 or callers will read "up to date".
+
+set -e
+
+OS_CONF="${M17OS_CONF:-/etc/m17os/m17os.conf}"
+OS_RELEASE="${M17OS_RELEASE:-/etc/m17os-release}"
+LIB_DIR="${M17OS_LIB:-/usr/local/lib/m17os}"
+TMP_DIR="${M17OS_TMP:-/data/tmp}"
+
+die() { echo "Error: $*" >&2; exit 2; }
+
+usage() {
+	echo "Usage: m17os-upgrade [--check | --install]"
+	echo "  --check    Check for an available update"
+	echo "  --install  Download and install the update to the inactive slot"
+	exit 2
+}
+
+[ "$(id -u)" -eq 0 ] || die "must be run as root"
+[ -f "$OS_CONF" ] || die "$OS_CONF not found"
+
+# shellcheck disable=SC1090
+. "$OS_CONF"
+# shellcheck source=../lib/m17os/bootslot.sh
+. "$LIB_DIR/bootslot.sh"
+
+read_slot_conf || die "$SLOT_CONF not found"
+
+# The slot the firmware boots is the one os_prefix selects in config.txt
+BOOT_ACTIVE=$(active_slot)
+[ -n "$BOOT_ACTIVE" ] && ACTIVE_SLOT="$BOOT_ACTIVE"
+
+case "$ACTIVE_SLOT" in
+	A|B) INACTIVE_SLOT=$(other_slot "$ACTIVE_SLOT") ;;
+	*) die "invalid ACTIVE_SLOT: '$ACTIVE_SLOT'" ;;
+esac
+INACTIVE_PART=$(slot_part "$INACTIVE_SLOT")
+INACTIVE_DEV=$(slot_dev "$INACTIVE_SLOT")
+
+# manifest_value KEY - print KEY's value from the downloaded manifest.
+# The manifest comes from the network, so it is parsed rather than sourced.
+manifest_value() {
+	sed -n "s/^$1=//p" "$TMP_DIR/$MANIFEST_FILE" | head -1 | tr -d '"\r'
+}
+
+fetch_manifest() {
+	mkdir -p "$TMP_DIR"
+	rm -f "$TMP_DIR/$MANIFEST_FILE" "$TMP_DIR/$MANIFEST_FILE.minisig"
+	wget -q -O "$TMP_DIR/$MANIFEST_FILE" "$UPDATE_URL/$MANIFEST_FILE" || \
+		die "failed to fetch manifest from $UPDATE_URL/$MANIFEST_FILE"
+
+	if [ -n "$RELEASE_PUBKEY" ] && [ -f "$RELEASE_PUBKEY" ]; then
+		wget -q -O "$TMP_DIR/$MANIFEST_FILE.minisig" "$UPDATE_URL/$MANIFEST_FILE.minisig" || \
+			die "failed to fetch the manifest signature"
+		minisign -V -q -p "$RELEASE_PUBKEY" -m "$TMP_DIR/$MANIFEST_FILE" || \
+			die "manifest signature is not valid"
+		SIGNED=true
+	else
+		SIGNED=false
+	fi
+
+	VERSION=$(manifest_value VERSION)
+	BUILD_DATE=$(manifest_value BUILD_DATE)
+	ROOTFS_FILENAME=$(manifest_value ROOTFS_FILENAME)
+	ROOTFS_SHA256=$(manifest_value ROOTFS_SHA256)
+	ARCH=$(manifest_value ARCH)
+
+	case "$VERSION" in
+		""|.*|*.|*..*|*[!0-9.]*) die "manifest has invalid VERSION: '$VERSION'" ;;
+	esac
+	case "$ROOTFS_FILENAME" in
+		""|*[!A-Za-z0-9._-]*) die "manifest has invalid ROOTFS_FILENAME" ;;
+	esac
+	case "$ROOTFS_SHA256" in
+		"") ;;
+		*[!0-9a-f]*) die "manifest has invalid ROOTFS_SHA256" ;;
+	esac
+	if [ -n "$ARCH" ] && [ "$ARCH" != "$(apk --print-arch)" ]; then
+		die "update is for $ARCH, this system is $(apk --print-arch)"
+	fi
+}
+
+# current_version - version of the running rootfs. /etc/m17os-release
+# belongs to the slot itself, so it is authoritative; slot.conf is the
+# fallback.
+current_version() {
+	ver=""
+	if [ -f "$OS_RELEASE" ]; then
+		ver=$(sed -n 's/^Version:[[:space:]]*//p' "$OS_RELEASE" | head -1)
+	fi
+	if [ -z "$ver" ]; then
+		case "$ACTIVE_SLOT" in
+			A) ver="$SLOT_A_VERSION" ;;
+			B) ver="$SLOT_B_VERSION" ;;
+		esac
+	fi
+	echo "${ver%% *}"
+}
+
+# shellcheck source=../lib/m17os/version.sh
+. "$LIB_DIR/version.sh"
+
+check_update() {
+	fetch_manifest
+
+	CURRENT_VER=$(current_version)
+
+	echo "m17-hotspot-os update check"
+	echo "Current:    ${CURRENT_VER:-unknown}"
+	echo "Available:  ${VERSION} (${BUILD_DATE:-unknown})"
+	echo "Signed:     $SIGNED"
+	echo "Active:     slot $ACTIVE_SLOT"
+	echo "Target:     slot $INACTIVE_SLOT (partition $INACTIVE_PART)"
+
+	if [ -z "$CURRENT_VER" ] || version_gt "$VERSION" "$CURRENT_VER"; then
+		echo "Status:     update available"
+		return 0
+	fi
+	echo "Status:     up to date"
+	return 1
+}
+
+install_update() {
+	[ -n "$BOOT_ACTIVE" ] || die "config.txt has no os_prefix; the boot partition is not set up for A/B slots"
+	[ "$PENDING" = "true" ] && \
+		die "slot $ACTIVE_SLOT is still pending validation; reboot (or wait for the health check) first"
+
+	fetch_manifest
+
+	CURRENT_VER=$(current_version)
+	if [ -n "$CURRENT_VER" ] && ! version_gt "$VERSION" "$CURRENT_VER"; then
+		echo "Already running $CURRENT_VER; $VERSION is not newer."
+		exit 0
+	fi
+
+	ROOTFS_FILE="$TMP_DIR/$ROOTFS_FILENAME"
+	echo "Downloading $ROOTFS_FILENAME..."
+	wget -q -O "$ROOTFS_FILE" "$UPDATE_URL/$ROOTFS_FILENAME" || \
+		die "failed to download the rootfs tarball"
+
+	echo "Verifying checksum..."
+	if [ -z "$ROOTFS_SHA256" ]; then
+		$SIGNED && die "signed manifest has no ROOTFS_SHA256"
+		# Unsigned release: fall back to the .sha256 file next to it
+		wget -q -O "$ROOTFS_FILE.sha256" "$UPDATE_URL/$ROOTFS_FILENAME.sha256" || \
+			die "failed to download the checksum file"
+		ROOTFS_SHA256=$(cut -d' ' -f1 "$ROOTFS_FILE.sha256")
+		rm -f "$ROOTFS_FILE.sha256"
+	fi
+	got=$(sha256sum "$ROOTFS_FILE" | cut -d' ' -f1)
+	if [ "$got" != "$ROOTFS_SHA256" ]; then
+		rm -f "$ROOTFS_FILE"
+		die "checksum mismatch for $ROOTFS_FILENAME"
+	fi
+
+	MOUNT_DIR="/run/m17os-inactive"
+	cleanup() {
+		umount "$MOUNT_DIR" 2>/dev/null || true
+		rmdir "$MOUNT_DIR" 2>/dev/null || true
+	}
+	trap cleanup EXIT
+
+	echo "Formatting $INACTIVE_DEV..."
+	mkfs.ext4 -q -F -L "rootfs-$(echo "$INACTIVE_SLOT" | tr AB ab)" "$INACTIVE_DEV"
+
+	mkdir -p "$MOUNT_DIR"
+	mount "$INACTIVE_DEV" "$MOUNT_DIR"
+
+	echo "Extracting rootfs to slot $INACTIVE_SLOT..."
+	tar -xJf "$ROOTFS_FILE" -C "$MOUNT_DIR"
+	[ -f "$MOUNT_DIR/etc/m17os-release" ] || die "the rootfs tarball is not an m17-hotspot-os rootfs"
+
+	# Build the new slot's boot directory from the extracted rootfs. The
+	# running slot's directory is never touched.
+	echo "Installing boot files for slot $INACTIVE_SLOT..."
+	install_slot_boot "$MOUNT_DIR/boot/firmware" "$INACTIVE_SLOT" \
+		"$BOOTSLOT_FW_DIR/slot$ACTIVE_SLOT/cmdline.txt" || \
+		die "could not install boot files for slot $INACTIVE_SLOT"
+
+	sync
+	cleanup
+	trap - EXIT
+	rm -f "$ROOTFS_FILE"
+
+	# Record the new slot as pending before the firmware can boot it, so the
+	# watchdog counts its boots even if power is lost right after the switch.
+	case "$INACTIVE_SLOT" in
+		A) SLOT_A_VERSION="$VERSION" ;;
+		B) SLOT_B_VERSION="$VERSION" ;;
+	esac
+	PREVIOUS_SLOT="$ACTIVE_SLOT"
+	ACTIVE_SLOT="$INACTIVE_SLOT"
+	PENDING=true
+	BOOT_TRIES=0
+	write_slot_conf
+
+	# Switch the firmware to the new slot: one rewrite of config.txt
+	set_active_slot "$INACTIVE_SLOT" || die "could not update config.txt"
+
+	slot_event "upgrade: installed $VERSION to slot $INACTIVE_SLOT (from slot $PREVIOUS_SLOT, $(current_version))"
+	echo ""
+	echo "Update $VERSION installed to slot $INACTIVE_SLOT."
+	echo "Reboot to activate it. If it fails to come up healthy, the system"
+	echo "returns to slot $PREVIOUS_SLOT automatically."
+}
+
+case "$1" in
+	--check)   check_update ;;
+	--install) install_update ;;
+	*)         usage ;;
+esac

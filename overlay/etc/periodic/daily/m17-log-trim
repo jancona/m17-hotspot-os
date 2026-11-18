@@ -1,0 +1,11 @@
+#!/bin/sh
+# /var/log is a 64 MB tmpfs. Keep the gateway's logs from filling it: when
+# a log passes 8 MB, keep its last 2 MB. The file is truncated in place so
+# the writer keeps its handle; the dashboard notices and rereads it.
+for f in /var/log/m17-gateway/m17-gateway.log /var/log/m17-gateway/dashboard.log; do
+	[ -f "$f" ] || continue
+	size=$(stat -c %s "$f")
+	[ "$size" -gt 8388608 ] || continue
+	tail -c 2097152 "$f" | sed '1d' > "$f.tmp" && cat "$f.tmp" > "$f"
+	rm -f "$f.tmp"
+done

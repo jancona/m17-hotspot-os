@@ -1,0 +1,33 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# m17os-varlog - recreate /var/log's directories on the tmpfs
+# Part of m17-hotspot-os.
+#
+# /var/log is a tmpfs (to spare the SD card), so it starts empty at every
+# boot. Packages such as nginx and php-fpm won't start without their log
+# directories, so the build records the directories the root filesystem
+# had in /etc/m17os/var-log-dirs ("mode owner:group path" per line), and
+# this recreates them.
+
+description="Recreate the /var/log directories on the tmpfs" # used by OpenRC
+
+LIST=/etc/m17os/var-log-dirs
+
+depend() {
+	need localmount
+	before bootmisc syslog
+}
+
+start() {
+	[ -f "$LIST" ] || return 0
+	ebegin "Creating /var/log directories"
+	rc=0
+	while read -r mode owner path; do
+		case "$path" in
+			/var/log/*) ;;
+			*) continue ;;
+		esac
+		mkdir -p "$path" && chown "$owner" "$path" && chmod "$mode" "$path" || rc=1
+	done < "$LIST"
+	eend $rc
+}

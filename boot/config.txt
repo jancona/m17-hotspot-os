@@ -1,0 +1,68 @@
+# m17-hotspot-os /boot/firmware/config.txt (aarch64)
+# Based on RasPINE's aarch64 config.txt. See https://rptl.io/configtxt
+#
+# The blocks at the end are managed by m17-hotspot-os tools:
+#   "radio HAT"  - m17os-hat (overlays the HAT needs, e.g. I2S for the SX1255)
+#   "boot slot"  - m17os-upgrade / m17os-rollback (os_prefix)
+
+arm_64bit=1
+camera_auto_detect=0
+display_auto_detect=0
+disable_fw_kms_setup=1
+disable_overscan=1
+disable_splash=1
+
+# The radio HAT talks to the Pi over the PL011 UART on GPIO 14/15
+# (/dev/ttyAMA0); Bluetooth moves to the mini UART.
+enable_uart=1
+dtoverlay=miniuart-bt
+
+[pi3]
+dtoverlay=vc4-fkms-v3d
+max_framebuffers=1
+gpu_mem=16
+kernel=kernel8.img
+
+[pi3+]
+dtoverlay=vc4-fkms-v3d
+max_framebuffers=1
+gpu_mem=16
+kernel=kernel8.img
+
+[pi02]
+dtoverlay=vc4-fkms-v3d
+max_framebuffers=1
+gpu_mem=16
+kernel=kernel8.img
+
+[pi4]
+dtoverlay=vc4-kms-v3d,noaudio
+max_framebuffers=2
+gpu_mem=64
+kernel=kernel8.img
+
+[cm4]
+dtoverlay=vc4-kms-v3d,noaudio
+max_framebuffers=2
+gpu_mem=64
+kernel=kernel8.img
+otg_mode=1
+
+[pi5]
+dtoverlay=vc4-kms-v3d,noaudio
+max_framebuffers=2
+kernel=kernel_2712.img
+
+[cm5]
+dtoverlay=vc4-kms-v3d,noaudio
+max_framebuffers=2
+kernel=kernel_2712.img
+dtoverlay=dwc2,dr_mode=host
+
+[all]
+temp_limit=75
+# On a Pi 5, enable_uart=1 enables the debug connector's UART; the one on
+# GPIO 14/15 is /dev/ttyAMA0 only with uart0 enabled
+dtparam=uart0=on
+dtparam=spi=on
+dtparam=i2c_arm=on

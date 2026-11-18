@@ -1,0 +1,120 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# m17os-health-check - validate a newly installed slot and clear PENDING
+# Part of m17-hotspot-os. Based on pistar-health-check from Pi-Star OS by
+# Andy Taylor, MW0MWZ (https://github.com/MW0MWZ/Pi-Star_OS), GPL-2.0.
+#
+# A pending slot is healthy when every check passes:
+#   - the network has come up, if any network is configured (an offline
+#     hotspot must not roll back a working upgrade)
+#   - every executable in /etc/m17os/health.d/ exits 0. Each hook prints a
+#     short reason when it fails. Hooks are run again until they pass, so
+#     they may fail while their service is still starting.
+#
+# Checks are polled until they pass or HEALTH_TIMEOUT expires. On timeout
+# the slot stays PENDING; with HEALTH_FAIL_REBOOT the system reboots so the
+# boot watchdog counts the attempt and rolls back after MAX_BOOT_TRIES.
+
+description="m17-hotspot-os health check (validates an A/B slot after upgrade)" # used by OpenRC
+
+depend() {
+	use net logger
+	after net m17os-boot-watchdog m17-gateway nginx php-fpm84
+}
+
+# shellcheck source=../../usr/local/lib/m17os/bootslot.sh
+. /usr/local/lib/m17os/bootslot.sh
+
+HOOK_DIR=/etc/m17os/health.d
+WPA_CONF=/etc/wpa_supplicant/wpa_supplicant.conf
+HEALTH_TIMEOUT=180
+HEALTH_INTERVAL=5
+HEALTH_FAIL_REBOOT=true
+# shellcheck disable=SC1091
+[ -f /etc/m17os/m17os.conf ] && . /etc/m17os/m17os.conf
+
+log() {
+	slot_event "health-check: $*"
+}
+
+# network_configured - an Ethernet cable is connected or WiFi networks are
+# configured, so the network is expected to come up
+network_configured() {
+	for carrier in /sys/class/net/*/carrier; do
+		iface="${carrier%/carrier}"
+		iface="${iface##*/}"
+		[ "$iface" = "lo" ] && continue
+		[ -d "/sys/class/net/$iface/wireless" ] && continue
+		[ "$(cat "$carrier" 2>/dev/null)" = "1" ] && return 0
+	done
+	grep -q '^[[:space:]]*network[[:space:]]*=' "$WPA_CONF" 2>/dev/null
+}
+
+# network_up - some interface has a usable (non link-local) IPv4 address
+network_up() {
+	ip -4 -o addr show scope global 2>/dev/null | grep ' inet ' | grep -qv ' inet 169\.254\.'
+}
+
+# run_hooks - run every health hook; set FAILED to the reasons of those
+# that fail
+run_hooks() {
+	for hook in "$HOOK_DIR"/*; do
+		[ -f "$hook" ] && [ -x "$hook" ] || continue
+		name="${hook##*/}"
+		if ! out=$(timeout 30 "$hook" 2>&1); then
+			reason=$(echo "$out" | head -1)
+			FAILED="$FAILED ${name}${reason:+ ($reason)}"
+		fi
+	done
+}
+
+start() {
+	read_slot_conf || return 0
+	[ "$PENDING" = "true" ] || return 0
+
+	ebegin "Health check: validating slot $ACTIVE_SLOT (up to ${HEALTH_TIMEOUT}s)"
+
+	need_network=true
+	if ! network_configured; then
+		need_network=false
+		einfo "No network configured - skipping the network check"
+		log "No network configured - skipping the network check"
+	fi
+
+	elapsed=0
+	while :; do
+		FAILED=""
+		if $need_network && ! network_up; then
+			FAILED=" network"
+		fi
+		run_hooks
+
+		if [ -z "$FAILED" ]; then
+			read_slot_conf
+			PENDING=false
+			BOOT_TRIES=0
+			write_slot_conf
+			einfo "Health check passed after ${elapsed}s - slot $ACTIVE_SLOT is good"
+			log "Slot $ACTIVE_SLOT passed after ${elapsed}s - marked as good"
+			eend 0
+			return 0
+		fi
+
+		[ "$elapsed" -ge "$HEALTH_TIMEOUT" ] && break
+		sleep "$HEALTH_INTERVAL"
+		elapsed=$((elapsed + HEALTH_INTERVAL))
+	done
+
+	ewarn "Health check failed after ${HEALTH_TIMEOUT}s:${FAILED}"
+	log "Slot $ACTIVE_SLOT failed after ${HEALTH_TIMEOUT}s:${FAILED} - still pending"
+	if [ "$HEALTH_FAIL_REBOOT" = "true" ]; then
+		ewarn "Rebooting so the boot watchdog can count this attempt"
+		log "Rebooting so the boot watchdog can count this attempt"
+		eend 1
+		# In the background: OpenRC must finish starting this service first
+		( sleep 5; reboot ) &
+		return 1
+	fi
+	ewarn "Slot $ACTIVE_SLOT remains pending"
+	eend 1
+}

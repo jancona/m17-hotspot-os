@@ -1,0 +1,10 @@
+#!/bin/sh
+# Refresh the M17 reflector host file the gateway and dashboard use
+FILE=/var/lib/m17-dashboard/files/M17Hosts.txt
+URL=https://m17-project.github.io/hostfiles/M17Hosts.txt
+[ -d "${FILE%/*}" ] || exit 0
+curl -fsS --max-time 60 -A "m17-hotspot-os" -z "$FILE" -o "$FILE.new" "$URL" || exit 0
+if [ -s "$FILE.new" ]; then
+	cat "$FILE.new" > "$FILE"
+fi
+rm -f "$FILE.new"

@@ -1,0 +1,70 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# m17os-boot-watchdog - count boots of a pending slot, roll back when too many
+# Part of m17-hotspot-os. Based on pistar-boot-watchdog from Pi-Star OS by
+# Andy Taylor, MW0MWZ (https://github.com/MW0MWZ/Pi-Star_OS), GPL-2.0.
+
+description="m17-hotspot-os boot watchdog (A/B slot failure detection)" # used by OpenRC
+
+depend() {
+	need localmount
+	use logger
+	before m17os-health-check
+}
+
+# shellcheck source=../../usr/local/lib/m17os/bootslot.sh
+. /usr/local/lib/m17os/bootslot.sh
+
+MAX_BOOT_TRIES=3
+# shellcheck disable=SC1091
+[ -f /etc/m17os/m17os.conf ] && . /etc/m17os/m17os.conf
+
+log() {
+	slot_event "boot-watchdog: $2"
+}
+
+# booted_slot - the slot whose partition the kernel was started with
+booted_slot() {
+	root=$(sed -n 's/.*root=\([^ ]*\).*/\1/p' /proc/cmdline)
+	case "$root" in
+		"$(slot_dev A)") echo A ;;
+		"$(slot_dev B)") echo B ;;
+		*) echo "" ;;
+	esac
+}
+
+start() {
+	read_slot_conf || return 0
+	[ "$PENDING" = "true" ] || return 0
+
+	booted=$(booted_slot)
+	if [ -n "$booted" ] && [ "$booted" != "$ACTIVE_SLOT" ]; then
+		# slot.conf was updated but config.txt still selects the old slot:
+		# the upgrade was interrupted before the switch. Nothing is pending.
+		ewarn "Slot $ACTIVE_SLOT was never switched to - staying on slot $booted"
+		log warn "Upgrade to slot $ACTIVE_SLOT was interrupted; running slot $booted"
+		ACTIVE_SLOT="$booted"
+		PREVIOUS_SLOT=""
+		PENDING=false
+		BOOT_TRIES=0
+		write_slot_conf
+		return 0
+	fi
+
+	BOOT_TRIES=$((BOOT_TRIES + 1))
+	ebegin "Boot watchdog: try $BOOT_TRIES of $MAX_BOOT_TRIES for slot $ACTIVE_SLOT"
+	log notice "Slot $ACTIVE_SLOT pending: boot try $BOOT_TRIES of $MAX_BOOT_TRIES"
+
+	write_slot_conf
+
+	if [ "$BOOT_TRIES" -gt "$MAX_BOOT_TRIES" ]; then
+		ewarn "Too many failed boots - rolling back to slot $PREVIOUS_SLOT"
+		log warn "Slot $ACTIVE_SLOT failed $MAX_BOOT_TRIES boots - rolling back to slot $PREVIOUS_SLOT"
+		/usr/local/bin/m17os-rollback --force
+		# m17os-rollback --force reboots; only reached if it failed
+		eend 1 "Rollback failed"
+		return 1
+	fi
+
+	eend 0
+}

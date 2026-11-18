@@ -81,6 +81,8 @@ Automatic, unattended updates are planned once releases are signed (see [Signing
 
 - The HAT uses the PL011 UART on GPIO 14/15 (`/dev/ttyAMA0`); Bluetooth is moved to the mini UART (`dtoverlay=miniuart-bt`), and no serial console is started.
 - **SX1255:** `hat=sx1255` (or `doas m17os-hat set sx1255`) enables I2S and the `genericstereoaudiocodec` overlay, then needs a reboot. Those pins (GPIO 18–21) are the CC1200 HAT's BOOT0/NRST lines, so the overlay is only enabled for the SX1255.
+- The Pi has no clock battery. The time is saved to `/data` every 15 minutes and at shutdown, and restored at boot (never moving the clock backwards); `ntpd` keeps it right once the network is up.
+- `scp` and `sftp` work (OpenSSH's `sftp-server` alongside Dropbear).
 - HAT firmware is not flashed automatically yet; `stm32flash` is installed for doing it by hand.
 
 ## Building

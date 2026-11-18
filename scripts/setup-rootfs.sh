@@ -40,7 +40,7 @@ for try in 1 2 3; do apk update && break; sleep 10; done
 
 apk_add \
 	alpine-base openrc busybox-openrc util-linux e2fsprogs e2fsprogs-extra parted \
-	dropbear dropbear-scp \
+	dropbear dropbear-scp openssh-sftp-server \
 	wpa_supplicant wireless-regdb iw dhcpcd \
 	ca-certificates tzdata curl minisign procps \
 	doas doas-sudo-shim \
@@ -67,10 +67,10 @@ done
 rc-update del hwclock boot 2>/dev/null || true
 rc-update add swclock boot
 # m17-hotspot-os boot services (ordering comes from their depend())
-for s in m17os-data-resize m17os-varlog m17os-bindmounts m17os-config m17os-boot-watchdog; do
+for s in m17os-data-resize m17os-varlog m17os-clock m17os-bindmounts m17os-config m17os-boot-watchdog; do
 	rc-update add "$s" boot
 done
-for s in dropbear crond avahi-daemon php-fpm84 nginx m17-gateway m17os-health-check; do
+for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17os-health-check; do
 	rc-update add "$s" default
 done
 
@@ -147,12 +147,18 @@ ln -sf dhcpcd/dhcpcd.conf /etc/dhcpcd.conf
 mkdir -p /usr/lib/dhcpcd/dhcpcd-hooks
 cat > /usr/lib/dhcpcd/dhcpcd-hooks/30-time-sync <<'EOF'
 #!/bin/sh
-# The Pi has no clock battery: set the time as soon as there is a network
+# The Pi has no clock battery: set the time as soon as there is a network,
+# without waiting for the ntpd service (which then keeps it right), and
+# save it so the next boot starts close to the real time
 case "$reason" in
 BOUND|INFORM|REBIND|REBOOT)
-	ntpd -q -n -p pool.ntp.org 2>/dev/null || \
-	ntpd -q -n -p time.cloudflare.com 2>/dev/null || \
-	logger -t dhcpcd "Time sync failed"
+	rc-service ntpd status >/dev/null 2>&1 && exit 0
+	if ntpd -q -n -p pool.ntp.org 2>/dev/null || \
+	   ntpd -q -n -p time.cloudflare.com 2>/dev/null; then
+		/usr/local/libexec/m17os/clock save
+	else
+		logger -t dhcpcd "Time sync failed"
+	fi
 	;;
 esac
 EOF

@@ -53,12 +53,16 @@ ls /boot/firmware/bcm2710-rpi-zero-2-w.dtb /boot/firmware/bcm2712-rpi-5-b.dtb >/
 [ -L /lib/modules ] && [ -n "$(ls -A /lib/modules/)" ] && ok || fail "/lib/modules not populated"
 
 section "Services"
-for s in m17os-data-resize m17os-bindmounts m17os-config m17os-boot-watchdog wpa_supplicant dhcpcd; do
+for s in m17os-data-resize m17os-varlog m17os-clock m17os-bindmounts m17os-config m17os-boot-watchdog wpa_supplicant dhcpcd; do
 	[ -L "/etc/runlevels/boot/$s" ] && ok || fail "$s not in boot runlevel"
 done
-for s in dropbear crond avahi-daemon php-fpm84 nginx m17-gateway m17os-health-check; do
+for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17os-health-check; do
 	[ -L "/etc/runlevels/default/$s" ] && ok || fail "$s not in default runlevel"
 done
+
+getent passwd ntp >/dev/null && ok || fail "no ntp user for the ntpd service"
+[ -x /usr/lib/ssh/sftp-server ] && ok || fail "no sftp-server, so scp to the hotspot fails"
+grep -q 'rc-service ntpd status' /usr/lib/dhcpcd/dhcpcd-hooks/30-time-sync && ok || fail "time-sync hook not updated"
 
 section "Users and permissions"
 id m17 | grep -q wheel && ok || fail "m17 not in wheel"

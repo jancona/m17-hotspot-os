@@ -1,0 +1,3 @@
+#!/bin/sh
+# Save the time, so a power cut loses at most 15 minutes of it
+exec /usr/local/libexec/m17os/clock save

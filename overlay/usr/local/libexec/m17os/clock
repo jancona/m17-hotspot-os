@@ -1,0 +1,41 @@
+#!/bin/sh
+# clock - keep a rough time across reboots on a Pi without a clock battery
+# Part of m17-hotspot-os.
+#
+#   clock restore   set the clock from the saved time, if that is later
+#   clock save      record the current time
+#
+# The time is the modification time of a file on /data, so it survives OS
+# upgrades (a new slot has no saved time of its own). It is saved every 15
+# minutes and at shutdown, so after a power cut the clock starts at most
+# 15 minutes behind, until NTP corrects it.
+
+STAMP="${M17OS_CLOCK_FILE:-/data/m17os/clock}"
+
+case "$1" in
+	restore)
+		[ -f "$STAMP" ] || exit 0
+		saved=$(stat -c %Y "$STAMP") || exit 1
+		now=$(date +%s)
+		# Never move the clock backwards: NTP or an RTC may already have
+		# set it, and the saved time is only a lower bound
+		if [ "$saved" -gt "$now" ]; then
+			date -u -s "@$saved" >/dev/null || exit 1
+			echo "Clock set to the saved time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+		fi
+		;;
+	save)
+		dir="${STAMP%/*}"
+		[ -d "$dir" ] || exit 0
+		# Don't record a time older than the one already saved (the clock
+		# may not have been set yet)
+		if [ -f "$STAMP" ] && [ "$(stat -c %Y "$STAMP")" -gt "$(date +%s)" ]; then
+			exit 0
+		fi
+		touch "$STAMP"
+		;;
+	*)
+		echo "Usage: clock restore|save" >&2
+		exit 2
+		;;
+esac

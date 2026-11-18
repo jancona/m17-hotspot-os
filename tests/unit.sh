@@ -105,6 +105,36 @@ cp "$REPO_DIR/boot/slot.conf" "$FW/slot.conf"
 	check "bad version ignored" "" "$SLOT_A_VERSION"
 )
 
+# ── clock (saved time) ───────────────────────────────────────────────
+CK="$T/clock"
+mkdir -p "$CK/bin" "$CK/data"
+# A stand-in for date(1): "now" comes from $CK/now, and setting the clock
+# is recorded instead of done
+cat > "$CK/bin/date" <<EOF
+#!/bin/sh
+case "\$*" in
+	+%s) cat "$CK/now" ;;
+	"-u -s "*) echo "\$3" >> "$CK/set" ;;
+	*) echo "fake date" ;;
+esac
+EOF
+chmod +x "$CK/bin/date"
+clk() { PATH="$CK/bin:$PATH" M17OS_CLOCK_FILE="$CK/data/clock" sh "$REPO_DIR/overlay/usr/local/libexec/m17os/clock" "$@" >/dev/null; }
+: > "$CK/set"
+echo 2000000000 > "$CK/now"
+clk restore; check "restore without a saved time" "" "$(cat "$CK/set")"
+touch -d @1900000000 "$CK/data/clock"
+clk restore; check "older saved time is ignored" "" "$(cat "$CK/set")"
+touch -d @2100000000 "$CK/data/clock"
+clk restore; check "newer saved time is restored" "@2100000000" "$(cat "$CK/set")"
+clk save; check "save keeps a newer saved time" 2100000000 "$(stat -c %Y "$CK/data/clock")"
+echo 1000000000 > "$CK/now"
+touch -d @900000000 "$CK/data/clock"
+clk save
+[ "$(stat -c %Y "$CK/data/clock")" -gt 900000000 ] && ok || fail "save did not update an older saved time"
+rm -rf "$CK/data"
+clk save; [ -e "$CK/data/clock" ] && fail "save created a missing /data directory" || ok
+
 # ── ini.sh ───────────────────────────────────────────────────────────
 . "$LIB/ini.sh"
 INI="$T/gw.ini"

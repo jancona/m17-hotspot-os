@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# m17os-clock - restore the saved time at boot, save it at shutdown
+# Part of m17-hotspot-os. See /usr/local/libexec/m17os/clock.
+
+description="Restore the clock from the time saved on /data" # used by OpenRC
+
+depend() {
+	need localmount
+	after swclock
+	before m17os-boot-watchdog m17os-config m17os-health-check
+}
+
+start() {
+	ebegin "Restoring the saved time"
+	/usr/local/libexec/m17os/clock restore
+	eend $?
+}
+
+stop() {
+	ebegin "Saving the time"
+	/usr/local/libexec/m17os/clock save
+	eend $?
+}

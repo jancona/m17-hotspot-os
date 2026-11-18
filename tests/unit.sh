@@ -180,7 +180,10 @@ echo "\$*" >> "$AU/apk.calls"
 case "\$*" in
 	"info -e "*) exit 0 ;;
 	"update -q") exit 0 ;;
-	"upgrade --simulate "*) [ -f "$AU/pkg-available" ] && echo "(1/1) Upgrading m17-gateway (0.9.3-r0 -> 0.9.4-r0)"; exit 0 ;;
+	"upgrade --simulate "*)
+		[ -f "$AU/pkg-available" ] && echo "(1/1) Upgrading m17-gateway (0.9.3-r0 -> 0.9.4-r0)"
+		[ -f "$AU/admin-available" ] && echo "(1/2) Upgrading m17-admin (0_git1-r0 -> 0_git1-r1)" && echo "(2/2) Upgrading m17-admin-openrc (0_git1-r0 -> 0_git1-r1)"
+		exit 0 ;;
 	"upgrade -q "*) exit 0 ;;
 esac
 exit 1
@@ -247,6 +250,10 @@ if [ "$(id -u)" -eq 0 ]; then
 	au --dry-run >/dev/null
 	case "$(calls apk)" in *"upgrade -q"*) fail "dry run installed packages" ;; *) ok ;; esac
 	rm -f "$AU/pkg-available"
+	touch "$AU/admin-available"
+	au --now >/dev/null
+	check "m17-admin restarted after its update" "m17-admin status;m17-admin restart;" "$(calls rc)"
+	rm -f "$AU/admin-available"
 	check "nothing to do" 0 "$(au --now)"
 	check "nothing result" current "$(result)"
 

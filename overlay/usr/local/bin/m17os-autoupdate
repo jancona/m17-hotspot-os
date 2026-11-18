@@ -208,6 +208,9 @@ status RESULT=updated PACKAGES_UPDATED="$summary"
 case " $pending " in *" m17-gateway "*)
 	rc-service m17-gateway status >/dev/null 2>&1 && rc-service m17-gateway restart >/dev/null 2>&1 && say "Restarted m17-gateway" ;;
 esac
+case " $pending " in *" m17-admin "*)
+	rc-service m17-admin status >/dev/null 2>&1 && rc-service m17-admin restart >/dev/null 2>&1 && say "Restarted m17-admin" ;;
+esac
 case " $pending " in *" rpi-dashboard "*)
 	rc-service php-fpm84 status >/dev/null 2>&1 && rc-service php-fpm84 restart >/dev/null 2>&1 && say "Restarted php-fpm84" ;;
 esac

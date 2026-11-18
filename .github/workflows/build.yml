@@ -19,7 +19,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Unit tests
         run: docker run --rm -v "$PWD":/repo:ro alpine:3.23 sh /repo/tests/unit.sh
@@ -44,7 +44,7 @@ jobs:
     outputs:
       release: ${{ steps.check.outputs.release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,7 +80,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Version
         run: |
@@ -117,7 +117,7 @@ jobs:
           minisign -V -p keys/release.pub -m out/manifest.txt
           rm -f "$RUNNER_TEMP/release.key"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: m17-hotspot-os-${{ env.VERSION }}
           path: out/

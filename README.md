@@ -113,7 +113,9 @@ On a Mac, run the same thing in a privileged `debian:trixie` container (Docker o
 minisign -G -W -p keys/release.pub -s release.key   # -W: no password, for CI
 ```
 
-Commit `keys/release.pub` and add the contents of `release.key` as the repository secret `MINISIGN_SECRET_KEY`. Keep a copy of `release.key` offline. Images built after that only accept signed updates.
+Commit `keys/release.pub` and add the contents of `release.key` as the repository secret `MINISIGN_SECRET_KEY`. Keep a copy of `release.key` offline. Images built after that only accept signed updates. Only release builds are signed, so pushes and pull requests build without the secret.
+
+This repository signs its releases with the key in [`keys/release.pub`](keys/release.pub) (minisign key ID `806421099057CCCE`).
 
 ## Differences from Pi-Star OS
 

@@ -22,7 +22,7 @@ check() { if [ "$2" = "$3" ]; then ok; else fail "$1: expected '$2', got '$3'"; 
 section() { echo; echo "── $* ──"; }
 
 section "Build tools"
-apk add --no-cache git curl zstd binutils rsync socat >/dev/null || { echo "apk add failed"; exit 1; }
+apk add --no-cache git curl zstd binutils rsync socat busybox-extras >/dev/null || { echo "apk add failed"; exit 1; }
 
 section "Fetch M17 components"
 sh "$REPO/scripts/fetch-m17.sh" /tmp/m17-stage || { echo "fetch-m17.sh failed"; exit 1; }
@@ -221,6 +221,45 @@ pidof m17-gateway >/dev/null && ok || fail "pidof does not find the gateway"
 wget -q -O /tmp/status.json http://127.0.0.1/get_status.php && ok || fail "get_status.php failed"
 grep -q '"gateway_status":"Running"' /tmp/status.json && ok || fail "dashboard status: $(head -c 200 /tmp/status.json)"
 kill "$GW" "$SOCAT" 2>/dev/null
+
+section "Signed releases (m17os-upgrade --check)"
+REL=/tmp/release
+mkdir -p "$REL" /tmp/keys /tmp/upg
+(cd /tmp/keys && minisign -G -W -p good.pub -s good.key >/dev/null && minisign -G -W -p other.pub -s other.key >/dev/null)
+echo "not really a rootfs" > "$REL/fake.rootfs.tar.xz"
+cat > "$REL/manifest.txt" <<EOF
+VERSION=2099.1.1.1
+BUILD_DATE=2099-01-01
+ARCH=$(apk --print-arch)
+ROOTFS_FILENAME=fake.rootfs.tar.xz
+ROOTFS_SHA256=$(sha256sum "$REL/fake.rootfs.tar.xz" | cut -d' ' -f1)
+EOF
+minisign -S -s /tmp/keys/good.key -m "$REL/manifest.txt" -x "$REL/manifest.txt.minisig" >/dev/null
+busybox-extras httpd -p 127.0.0.1:8099 -h "$REL"
+sleep 1
+wget -q -O /dev/null http://127.0.0.1:8099/manifest.txt && ok || fail "test web server not answering"
+printf 'ACTIVE_SLOT=A\nPREVIOUS_SLOT=\nPENDING=false\nBOOT_TRIES=0\nSLOT_A_VERSION="2026.1.1.1"\nSLOT_B_VERSION=\n' > /boot/firmware/slot.conf
+upg() { # upg PUBKEY - run --check against the test release with PUBKEY ("" = none)
+	sed -e 's|^UPDATE_URL=.*|UPDATE_URL="http://127.0.0.1:8099"|' \
+	    -e "s|^RELEASE_PUBKEY=.*|RELEASE_PUBKEY=\"$1\"|" /etc/m17os/m17os.conf > /tmp/upg/m17os.conf
+	M17OS_CONF=/tmp/upg/m17os.conf M17OS_TMP=/tmp/upg/dl M17OS_RELEASE=/nonexistent \
+		sh /usr/local/bin/m17os-upgrade --check > /tmp/upg/out 2>&1
+	echo $?
+}
+check "signed release accepted" 0 "$(upg /tmp/keys/good.pub)"
+grep -q 'Signed:     true' /tmp/upg/out && ok || fail "signed release not reported as signed: $(cat /tmp/upg/out)"
+check "no key: unsigned check still works" 0 "$(upg "")"
+check "wrong key rejected" 2 "$(upg /tmp/keys/other.pub)"
+grep -q 'signature is not valid' /tmp/upg/out && ok || fail "wrong key message: $(cat /tmp/upg/out)"
+cp "$REL/manifest.txt" /tmp/upg/manifest.orig
+sed -i 's/^ROOTFS_SHA256=.*/ROOTFS_SHA256=0000000000000000000000000000000000000000000000000000000000000000/' "$REL/manifest.txt"
+check "tampered manifest rejected" 2 "$(upg /tmp/keys/good.pub)"
+grep -q 'signature is not valid' /tmp/upg/out && ok || fail "tampered manifest message: $(cat /tmp/upg/out)"
+cp /tmp/upg/manifest.orig "$REL/manifest.txt"
+rm "$REL/manifest.txt.minisig"
+check "missing signature rejected" 2 "$(upg /tmp/keys/good.pub)"
+grep -q 'failed to fetch the manifest signature' /tmp/upg/out && ok || fail "missing signature message: $(cat /tmp/upg/out)"
+pkill -f 'httpd -p 127.0.0.1:8099' 2>/dev/null
 
 section "Gateway health hook"
 /etc/m17os/health.d/50-m17-gateway >/tmp/hook 2>&1

@@ -100,8 +100,10 @@ jobs:
           BUILD_COMMIT: ${{ github.sha }}
         run: sudo --preserve-env=BUILD_COMMIT scripts/build-image.sh "$VERSION" out
 
+      # Only releases are signed, so pushes and pull requests (including
+      # from forks, which get no secrets) build without the key
       - name: Sign manifest
-        if: hashFiles('keys/release.pub') != ''
+        if: hashFiles('keys/release.pub') != '' && needs.check.outputs.release == 'true' && github.ref == 'refs/heads/main'
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |

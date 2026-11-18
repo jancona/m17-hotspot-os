@@ -205,6 +205,12 @@ chmod 0600 /etc/doas.d/m17os.conf
 # /var/lib/m17-dashboard/. The image only changes defaults.
 . /usr/local/lib/m17os/ini.sh
 ini_set /etc/m17-gateway/m17-gateway.ini Log Level INFO
+# The dashboard's recent activity comes from this log, so it goes on /data
+# rather than the /var/log tmpfs, and survives reboots. It only gets a line
+# per event (a transmission, a reflector connect), so it adds little SD
+# card wear. m17os-config creates the directory at boot.
+ini_set /etc/m17-gateway/m17-gateway.ini General DashboardLog /data/log/m17-gateway/dashboard.log
+ln -sfn /data/log/m17-gateway/dashboard.log /var/lib/m17-dashboard/files/dashboard.log
 [ -L /etc/m17-gateway.ini ] || { echo "/etc/m17-gateway.ini link missing" >&2; exit 1; }
 
 # The dashboard's nginx site, as the default site

@@ -14,7 +14,7 @@ Download the image, write it to a card, boot, and set your callsign. No Raspberr
 | **Hardware** | Raspberry Pi Zero 2 W, 3, 4, 5 (64-bit only) |
 | **M17** | m17-gateway, rpi-dashboard (nginx + PHP-FPM), HAT firmware (CC1200, MMDVM_HS, MMDVM) and the SX1255 I2S codec overlay, from the [m17-apk](https://github.com/jancona/m17-apk) package repository; stm32flash |
 | **Updates** | A/B root partitions with boot watchdog, health check and automatic rollback, based on [Pi-Star OS](https://github.com/MW0MWZ/Pi-Star_OS) |
-| **Footprint** | Logs in RAM to spare the SD card; settings on a separate `/data` partition |
+| **Footprint** | Logs in RAM to spare the SD card, except the dashboard's activity log (one line per event), which is kept on `/data` so recent activity survives reboots; settings on a separate `/data` partition |
 
 ## Getting started
 

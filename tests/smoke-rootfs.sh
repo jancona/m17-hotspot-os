@@ -78,7 +78,8 @@ section "Gateway"
 grep -qi 'config' /tmp/gw-help && ok || fail "m17-gateway -h: $(head -3 /tmp/gw-help)"
 check "ini symlink" "m17-gateway/m17-gateway.ini" "$(readlink /etc/m17-gateway.ini)"
 . /usr/local/lib/m17os/ini.sh
-check "DashboardLog" /var/log/m17-gateway/dashboard.log "$(ini_get /etc/m17-gateway.ini General DashboardLog)"
+check "DashboardLog" /data/log/m17-gateway/dashboard.log "$(ini_get /etc/m17-gateway.ini General DashboardLog)"
+check "dashboard log link" /data/log/m17-gateway/dashboard.log "$(readlink /var/lib/m17-dashboard/files/dashboard.log)"
 check "HostFile" /var/lib/m17-gateway/M17Hosts.txt "$(ini_get /etc/m17-gateway.ini Reflector HostFile)"
 grep -q "$M17_APK_REPO/v$ALPINE_VERSION/m17" /etc/apk/repositories && ok || fail "m17-apk repository not configured"
 [ -f /usr/share/m17-firmware/mmdvm_hs/MMDVM_HS_Dual_Hat.bin ] && ok || fail "MMDVM_HS firmware missing"
@@ -232,6 +233,24 @@ check "OverrideHostFile migrated" /var/lib/m17-gateway/OverrideHosts.txt "$(ini_
 check "migrated owner" "m17-gateway:m17-gateway-control" "$(stat -c %U:%G /var/lib/m17-gateway/OverrideHosts.txt)"
 sh /usr/local/bin/m17os-config > /tmp/migrate2.log 2>&1
 grep -q 'Moved' /tmp/migrate2.log && fail "migration ran a second time" || ok
+
+section "Dashboard log on /data, and moving older hotspots there"
+# The first m17os-config runs above created the directory
+check "dashboard log dir owner" m17-gateway:m17-gateway "$(stat -c %U:%G /data/log/m17-gateway)"
+check "dashboard log owner" m17-gateway:m17-gateway "$(stat -c %U:%G /data/log/m17-gateway/dashboard.log)"
+echo '{"time":"x","type":"Gateway","subtype":"Start"}' >> /data/log/m17-gateway/dashboard.log
+# An older hotspot: log on the tmpfs, dashboard linked there
+ini_set /etc/m17-gateway.ini General DashboardLog /var/log/m17-gateway/dashboard.log
+ln -sfn /var/log/m17-gateway/dashboard.log /var/lib/m17-dashboard/files/dashboard.log
+sh /usr/local/bin/m17os-config > /tmp/dashlog.log 2>&1
+check "DashboardLog moved" /data/log/m17-gateway/dashboard.log "$(ini_get /etc/m17-gateway.ini General DashboardLog)"
+check "dashboard link moved" /data/log/m17-gateway/dashboard.log "$(readlink /var/lib/m17-dashboard/files/dashboard.log)"
+grep -q '"subtype":"Start"' /data/log/m17-gateway/dashboard.log && ok || fail "existing dashboard log content lost"
+# A path the user chose is left alone
+ini_set /etc/m17-gateway.ini General DashboardLog /home/m17/my-dashboard.log
+sh /usr/local/bin/m17os-config > /tmp/dashlog2.log 2>&1
+check "custom DashboardLog kept" /home/m17/my-dashboard.log "$(ini_get /etc/m17-gateway.ini General DashboardLog)"
+ini_set /etc/m17-gateway.ini General DashboardLog /data/log/m17-gateway/dashboard.log
 
 section "Running gateway is found (dashboard status, health hook)"
 socat pty,link=/tmp/ttyV0,raw,mode=666 pty,link=/tmp/ttyV1,raw & SOCAT=$!

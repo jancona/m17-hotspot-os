@@ -110,6 +110,38 @@ migrate_host_files() {
 }
 migrate_host_files
 
+# The dashboard log lives on /data so recent activity survives reboots.
+# Create its directory (the gateway can't: it starts as its own user), and
+# move hotspots from images up to 2026.11.18.3, which kept it on the
+# /var/log tmpfs. A DashboardLog the user set to something else is left
+# alone.
+DASHBOARD_LOG=/data/log/m17-gateway/dashboard.log
+OLD_DASHBOARD_LOG=/var/log/m17-gateway/dashboard.log
+ensure_dashboard_log() {
+	dir="${DASHBOARD_LOG%/*}"
+	if [ ! -d "$dir" ]; then
+		mkdir -p "$dir"
+		chown m17-gateway:m17-gateway "$dir" 2>/dev/null
+		chmod 0755 "$dir"
+	fi
+	if [ ! -e "$DASHBOARD_LOG" ]; then
+		: > "$DASHBOARD_LOG"
+		chown m17-gateway:m17-gateway "$DASHBOARD_LOG" 2>/dev/null
+		chmod 0644 "$DASHBOARD_LOG"
+	fi
+	[ -f "$GATEWAY_INI" ] || return 0
+	if [ "$(ini_get "$GATEWAY_INI" General DashboardLog)" = "$OLD_DASHBOARD_LOG" ]; then
+		ini_set "$GATEWAY_INI" General DashboardLog "$DASHBOARD_LOG"
+		log "Set DashboardLog to $DASHBOARD_LOG"
+	fi
+	link="${M17OS_DASHBOARD_STATE:-/var/lib/m17-dashboard}/files/dashboard.log"
+	if [ -L "$link" ] && [ "$(readlink "$link")" = "$OLD_DASHBOARD_LOG" ]; then
+		ln -sfn "$DASHBOARD_LOG" "$link"
+		log "Pointed the dashboard at $DASHBOARD_LOG"
+	fi
+}
+ensure_dashboard_log
+
 # ── Phase 1: source selection ─────────────────────────────────────────
 if [ -f "$CONFIG_FILE" ]; then
 	SOURCE="$CONFIG_FILE"

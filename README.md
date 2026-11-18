@@ -81,7 +81,7 @@ How it works:
 Every night in the update hour (03:00 local time unless `update_hour` says otherwise, plus a random delay of up to 45 minutes), `m17os-autoupdate` checks for updates:
 
 1. **A new OS release:** installed to the other slot, and the hotspot reboots into it. The health check and rollback described above guard it.
-2. **Otherwise, new M17 packages** (m17-gateway, the dashboard, firmware) from the m17-apk repository: upgraded in place, and the gateway or PHP restarted if they changed. Other Alpine packages and the kernel come only with OS releases, which are rebuilt at least monthly: a kernel upgraded with apk wouldn't match the slot's boot files.
+2. **Otherwise, new M17 packages** (m17-gateway, the dashboard, firmware) from the m17-apk repository: upgraded in place (with `apk upgrade <packages>`, which touches their dependencies only when a new version needs it), and the gateway or PHP restarted if they changed. Other Alpine packages and the kernel come only with OS releases, which are rebuilt at least monthly: a kernel upgraded with apk wouldn't match the slot's boot files.
 
 Nothing is installed during a transmission: it waits up to 30 minutes for the gateway to be idle, and otherwise tries the next night. With `auto_update=notify` it only records what is available; with `off` it does nothing. Results go to the event log that `m17os-slot-info` shows.
 

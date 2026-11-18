@@ -127,7 +127,10 @@ os_available=""
 case $os_rc in
 	0) os_available=$(echo "$os_out" | sed -n 's/^Available:[[:space:]]*\([^ ]*\).*/\1/p') ;;
 	1) ;;
-	*) event "OS update check failed: $(echo "$os_out" | grep -m1 -i error)" ;;
+	*)
+		why=$(echo "$os_out" | grep -m1 -i error)
+		event "OS update check failed: ${why:-$(echo "$os_out" | tail -n 1)}"
+		;;
 esac
 
 if [ -n "$os_available" ]; then
@@ -167,9 +170,12 @@ if ! apk update -q >/dev/null 2>&1; then
 	status RESULT=failed REASON=apk-update
 	exit 1
 fi
+# apk upgrade with package names upgrades only those, and their
+# dependencies only where a new version needs it (apk add -u would also
+# upgrade every dependency, i.e. Alpine libraries)
 # "(1/2) Upgrading m17-gateway (0.9.3-r0 -> 0.9.4-r0)" -> "m17-gateway 0.9.4-r0"
 # shellcheck disable=SC2086
-pending=$(apk add -u --simulate $installed 2>/dev/null |
+pending=$(apk upgrade --simulate $installed 2>/dev/null |
 	sed -n 's/^([0-9]*\/[0-9]*) Upgrading \([^ ]*\) ([^ ]* -> \([^ )]*\))$/\1 \2/p')
 if [ -z "$pending" ]; then
 	[ "$os_rc" -eq 1 ] && say "Everything is up to date"
@@ -188,7 +194,7 @@ if ! wait_idle; then
 	exit 0
 fi
 # shellcheck disable=SC2086
-if ! apk add -u -q $installed; then
+if ! apk upgrade -q $installed; then
 	event "package updates failed to install: $summary"
 	status RESULT=failed PACKAGES_AVAILABLE="$summary"
 	exit 1

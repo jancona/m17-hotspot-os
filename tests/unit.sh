@@ -180,8 +180,8 @@ echo "\$*" >> "$AU/apk.calls"
 case "\$*" in
 	"info -e "*) exit 0 ;;
 	"update -q") exit 0 ;;
-	"add -u --simulate "*) [ -f "$AU/pkg-available" ] && echo "(1/1) Upgrading m17-gateway (0.9.3-r0 -> 0.9.4-r0)"; exit 0 ;;
-	"add -u -q "*) exit 0 ;;
+	"upgrade --simulate "*) [ -f "$AU/pkg-available" ] && echo "(1/1) Upgrading m17-gateway (0.9.3-r0 -> 0.9.4-r0)"; exit 0 ;;
+	"upgrade -q "*) exit 0 ;;
 esac
 exit 1
 EOF
@@ -240,12 +240,12 @@ if [ "$(id -u)" -eq 0 ]; then
 	rm -f "$AU/os-available"
 	touch "$AU/pkg-available"
 	check "package update" 0 "$(au --now)"
-	case "$(calls apk)" in *"add -u -q m17-gateway"*) ok ;; *) fail "packages not upgraded: $(calls apk)" ;; esac
+	case "$(calls apk)" in *"upgrade -q m17-gateway"*) ok ;; *) fail "packages not upgraded: $(calls apk)" ;; esac
 	check "gateway restarted" "m17-gateway status;m17-gateway restart;" "$(calls rc)"
 	check "package result" updated "$(result)"
 	grep -q 'updated packages: m17-gateway 0.9.4-r0' "$AU/events.log" && ok || fail "package update not in the event log: $(tail -1 "$AU/events.log")"
 	au --dry-run >/dev/null
-	case "$(calls apk)" in *"add -u -q"*) fail "dry run installed packages" ;; *) ok ;; esac
+	case "$(calls apk)" in *"upgrade -q"*) fail "dry run installed packages" ;; *) ok ;; esac
 	rm -f "$AU/pkg-available"
 	check "nothing to do" 0 "$(au --now)"
 	check "nothing result" current "$(result)"

@@ -435,7 +435,15 @@ echo ap > /run/m17os/mode
 printf 'wifi_ssid=APTest\nwifi_password=aptestpass\n' | M17OS_ACTION_DELAY=0 sh /usr/local/libexec/m17os/admin-helper apply >/dev/null
 sleep 1
 [ -f /run/m17os/request-join ] && ok || fail "helper apply in AP mode didn't ask netwatch to join"
+rm -f /run/m17os/request-join
+# Keeping the saved WiFi while on the AP still means "join it now"
+out=$(printf 'callsign=N0CALL\n' | M17OS_ACTION_DELAY=0 sh /usr/local/libexec/m17os/admin-helper apply)
+sleep 1
+case "$out" in *"network: true"*) ok ;; *) fail "apply on the AP without WiFi changes: $out" ;; esac
+[ -f /run/m17os/request-join ] && ok || fail "apply on the AP without WiFi changes didn't ask to join"
 rm -f /run/m17os/request-join /run/m17os/mode
+out=$(printf 'callsign=N0CALL\n' | M17OS_ACTION_DELAY=0 sh /usr/local/libexec/m17os/admin-helper apply)
+case "$out" in *"network: false"*) ok ;; *) fail "apply off the AP without WiFi changes: $out" ;; esac
 
 pkill -f '/usr/bin/m17-admin' 2>/dev/null
 

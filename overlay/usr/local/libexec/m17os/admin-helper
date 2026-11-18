@@ -37,6 +37,13 @@ case "${1:-}" in
 	apply)
 		[ $# -eq 1 ] || die "apply takes no arguments"
 		out=$("$CONFIG" --apply) || die "m17os-config --apply failed"
+		ap=false
+		[ "$(cat "$RUN/mode" 2>/dev/null)" = ap ] && ap=true
+		if $ap; then
+			# Applying settings from the setup access point means setup is
+			# done: join the WiFi even if its settings didn't change
+			out=$(echo "$out" | sed 's/^network: false$/network: true/')
+		fi
 		echo "$out"
 		reboot_needed=false
 		case "$out" in *"reboot: true"*) reboot_needed=true ;; esac
@@ -51,7 +58,7 @@ case "${1:-}" in
 			;;
 		esac
 		case "$out" in *"network: true"*)
-			if [ "$(cat "$RUN/mode" 2>/dev/null)" = ap ]; then
+			if $ap; then
 				# The setup access point is up: m17os-netwatch leaves it
 				# and joins the new network (or brings it back)
 				later touch "$RUN/request-join"

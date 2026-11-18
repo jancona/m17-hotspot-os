@@ -1,0 +1,91 @@
+#!/bin/sh
+# admin-helper - the privileged actions of the setup wizard (m17-admin)
+# Part of m17-hotspot-os. m17-admin runs as its own unprivileged user; this
+# is the only thing it may run as root (see /etc/doas.d/m17os.conf). Each
+# command is fixed, and nothing from the caller reaches a shell.
+#
+#   admin-helper apply              settings on stdin (m17-config.txt form)
+#                                   are applied with m17os-config --apply;
+#                                   prints its result, then restarts the
+#                                   gateway, reconnects WiFi or reboots
+#   admin-helper wifi-scan          networks in range:
+#                                   signal<TAB>MHz<TAB>flags<TAB>ssid
+#   admin-helper wifi-configured    names of the saved WiFi networks
+#   admin-helper update-policy      AUTO_UPDATE=... and UPDATE_HOUR=...
+#   admin-helper gateway stop|start|status
+#   admin-helper reboot
+
+PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WPA_CONF="${M17OS_WPA_CONF:-/etc/wpa_supplicant/wpa_supplicant.conf}"
+AUTOUPDATE_CONF="${M17OS_STATE_DIR:-/var/lib/m17os}/autoupdate.conf"
+IFACE="${M17OS_WIFI_IFACE:-wlan0}"
+CONFIG="${M17OS_CONFIG:-/usr/local/bin/m17os-config}"
+# How long the caller's web response gets before a reconnect or reboot
+DELAY="${M17OS_ACTION_DELAY:-5}"
+
+die() { echo "admin-helper: $*" >&2; exit 2; }
+
+# later COMMAND... - run a command in the background after DELAY seconds,
+# detached from the caller
+later() {
+	( sleep "$DELAY"; "$@" ) </dev/null >/dev/null 2>&1 &
+}
+
+case "${1:-}" in
+	apply)
+		[ $# -eq 1 ] || die "apply takes no arguments"
+		out=$("$CONFIG" --apply) || die "m17os-config --apply failed"
+		echo "$out"
+		reboot_needed=false
+		case "$out" in *"reboot: true"*) reboot_needed=true ;; esac
+		if $reboot_needed; then
+			later reboot
+			exit 0
+		fi
+		case "$out" in *"gateway: true"*)
+			# Restart only a gateway that's meant to run
+			rc-update show default 2>/dev/null | grep -q '^ *m17-gateway ' &&
+				rc-service m17-gateway restart >/dev/null 2>&1
+			;;
+		esac
+		case "$out" in *"network: true"*)
+			# Join the new network: wpa_supplicant rereads its configuration
+			later sh -c "wpa_cli -i '$IFACE' reconfigure || rc-service wpa_supplicant restart"
+			;;
+		esac
+		;;
+	wifi-scan)
+		[ $# -eq 1 ] || die "wifi-scan takes no arguments"
+		wpa_cli -i "$IFACE" scan >/dev/null 2>&1 || die "wpa_supplicant isn't running on $IFACE"
+		# Results arrive within a few seconds
+		sleep 4
+		# bssid freq signal flags ssid -> signal freq flags ssid
+		wpa_cli -i "$IFACE" scan_results 2>/dev/null |
+			awk -F '\t' 'NR > 1 && NF >= 5 { print $3 "\t" $2 "\t" $4 "\t" $5 }'
+		;;
+	wifi-configured)
+		[ $# -eq 1 ] || die "wifi-configured takes no arguments"
+		[ -f "$WPA_CONF" ] || exit 0
+		sed -n 's/^[[:space:]]*ssid="\(.*\)"[[:space:]]*$/\1/p' "$WPA_CONF"
+		;;
+	update-policy)
+		[ $# -eq 1 ] || die "update-policy takes no arguments"
+		[ -f "$AUTOUPDATE_CONF" ] && grep -E '^(AUTO_UPDATE|UPDATE_HOUR)=[A-Za-z0-9]*$' "$AUTOUPDATE_CONF"
+		exit 0
+		;;
+	gateway)
+		[ $# -eq 2 ] || die "usage: gateway stop|start|status"
+		case "$2" in
+			stop|start|status) exec rc-service m17-gateway "$2" ;;
+			*) die "usage: gateway stop|start|status" ;;
+		esac
+		;;
+	reboot)
+		[ $# -eq 1 ] || die "reboot takes no arguments"
+		later reboot
+		echo "rebooting"
+		;;
+	*)
+		die "unknown command: ${1:-(none)}"
+		;;
+esac

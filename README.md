@@ -57,6 +57,8 @@ doas -u www-data php84 /opt/m17/rpi-dashboard/set_password.php
 
 The full list with comments is in [`boot/m17-config.txt.sample`](boot/m17-config.txt.sample).
 
+The setup wizard ([m17-admin](https://github.com/jancona/m17-admin), in development) applies the same keys, through `m17os-config --apply` (settings on stdin, a `warning:`/`reboot:`/`network:`/`gateway:` result on stdout). It runs as its own user and reaches root only through `/usr/local/libexec/m17os/admin-helper`, which accepts a fixed set of commands. `reflector=none` means no reflector (RF only).
+
 The gateway settings go into `/etc/m17-gateway.ini`, the file the dashboard's Gateway page edits; everything else there can be changed on that page.
 
 ## Updates

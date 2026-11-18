@@ -325,6 +325,54 @@ check "missing signature rejected" 2 "$(upg /tmp/keys/good.pub)"
 grep -q 'failed to fetch the manifest signature' /tmp/upg/out && ok || fail "missing signature message: $(cat /tmp/upg/out)"
 pkill -f 'httpd -p 127.0.0.1:8099' 2>/dev/null
 
+section "m17os-config --apply (for the setup wizard)"
+echo test-hotspot-keep > /etc/hostname
+rm -f /data/m17os/user.conf
+out=$(printf 'callsign=n0call\nreflector=none\ncallsign=bad*call\nwifi_country=GB\nwifi_ssid=WizardNet\nwifi_password=wizardpass1\n' |
+	sh /usr/local/bin/m17os-config --apply)
+check "apply exit" 0 "$?"
+case "$out" in *"warning: invalid callsign 'BAD*CALL'"*) ok ;; *) fail "apply warning: $out" ;; esac
+case "$out" in *"network: true"*) ok ;; *) fail "apply network flag: $out" ;; esac
+case "$out" in *"gateway: true"*) ok ;; *) fail "apply gateway flag: $out" ;; esac
+case "$out" in *"reboot: false"*) ok ;; *) fail "apply reboot flag: $out" ;; esac
+case "$out" in *"["*) fail "log lines leaked into the apply result: $out" ;; *) ok ;; esac
+check "apply: reflector none" "" "$(ini_get /etc/m17-gateway.ini Reflector Name)"
+check "apply: callsign" "N0CALL" "$(ini_get /etc/m17-gateway.ini General Callsign)"
+grep -q 'ssid="WizardNet"' /etc/wpa_supplicant/wpa_supplicant.conf && ok || fail "apply: WiFi not written"
+grep -q '^hostname=test-hotspot-keep$' /data/m17os/user.conf && ok || \
+	fail "a partial update blanked the saved hostname: $(grep hostname /data/m17os/user.conf)"
+# The same for m17-config.txt: a file without hostname keeps the saved one
+printf 'callsign=N0CALL\n' > /boot/firmware/m17-config.txt
+sh /usr/local/bin/m17os-config > /tmp/partial.log 2>&1
+grep -q '^hostname=test-hotspot-keep$' /data/m17os/user.conf && ok || fail "m17-config.txt without hostname blanked it"
+out=$(printf 'hat=sx1255\n' | sh /usr/local/bin/m17os-config --apply)
+case "$out" in *"reboot: true"*) ok ;; *) fail "apply reboot flag for SX1255: $out" ;; esac
+printf 'hat=cc1200\n' | sh /usr/local/bin/m17os-config --apply >/dev/null
+ini_set /etc/m17-gateway.ini Reflector Name M17-M17
+
+section "Admin helper, run by m17-admin through doas"
+adduser -S -D -H -s /sbin/nologin m17-admin 2>/dev/null
+helper=/usr/local/libexec/m17os/admin-helper
+as_admin() { su -s /bin/sh m17-admin -c "$*"; }
+out=$(as_admin "doas -n $helper wifi-configured" 2>&1)
+check "helper: configured networks" "WizardNet" "$out"
+printf 'AUTO_UPDATE=notify\nUPDATE_HOUR=4\nevil=$(id)\n' > /var/lib/m17os/autoupdate.conf
+out=$(as_admin "doas -n $helper update-policy" 2>&1)
+check "helper: update policy" "AUTO_UPDATE=notify UPDATE_HOUR=4" "$(echo $out)"
+rm -f /var/lib/m17os/autoupdate.conf
+out=$(printf 'module=d\n' | as_admin "doas -n $helper apply" 2>&1); rc=$?
+check "helper apply exit" 0 "$rc"
+case "$out" in *"gateway: true"*) ok ;; *) fail "helper apply: $out" ;; esac
+check "helper apply: module" "D" "$(ini_get /etc/m17-gateway.ini Reflector Module)"
+as_admin "doas -n $helper gateway restart" >/dev/null 2>&1
+check "helper refuses gateway restart" 2 "$?"
+as_admin "doas -n $helper rm -rf /" >/dev/null 2>&1
+check "helper refuses unknown commands" 2 "$?"
+as_admin "doas -n $helper wifi-configured extra" >/dev/null 2>&1
+check "helper refuses extra arguments" 2 "$?"
+as_admin "doas -n /bin/sh -c id" >/dev/null 2>&1 && fail "m17-admin can run any command through doas" || ok
+su -s /bin/sh www-data -c "doas -n $helper wifi-configured" >/dev/null 2>&1 && fail "www-data can run the admin helper" || ok
+
 section "Automatic updates"
 [ -x /etc/periodic/hourly/m17os-autoupdate ] && ok || fail "hourly autoupdate job missing"
 printf 'auto_update=notify\nupdate_hour=4\n' > /boot/firmware/m17-config.txt

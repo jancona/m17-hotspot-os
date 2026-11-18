@@ -59,9 +59,11 @@ case "${1:-}" in
 	--status)
 		echo "Policy:       $AUTO_UPDATE"
 		echo "Update hour:  $UPDATE_HOUR:00 (local time, $(cat /etc/timezone 2>/dev/null || echo UTC))"
-		if [ -f "$STATUS" ]; then
+		if [ -r "$STATUS" ]; then
 			echo "Last run:"
 			sed 's/^\([A-Z_]*\)=/  \1: /' "$STATUS"
+		elif [ ! -r "$STATE_DIR" ]; then
+			echo "Last run:     (readable by root only: doas m17os-autoupdate --status)"
 		else
 			echo "Last run:     never"
 		fi

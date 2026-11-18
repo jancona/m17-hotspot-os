@@ -86,7 +86,7 @@ Every night in the update hour (03:00 local time unless `update_hour` says other
 Nothing is installed during a transmission: it waits up to 30 minutes for the gateway to be idle, and otherwise tries the next night. With `auto_update=notify` it only records what is available; with `off` it does nothing. Results go to the event log that `m17os-slot-info` shows.
 
 ```bash
-m17os-autoupdate --status        # policy, update hour, last result
+doas m17os-autoupdate --status   # policy, update hour, last result
 doas m17os-autoupdate --dry-run  # what would be updated now
 doas m17os-autoupdate --now      # update now (still waits for an idle gateway)
 ```

@@ -23,9 +23,22 @@ $RASPINE_REPO/v${ALPINE_VERSION}/community
 https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main
 https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community
 EOF
-apk update
+# apk_add ARGS - apk add, retried: a package download from a mirror or
+# behind a CDN occasionally fails partway, and one bad fetch shouldn't fail
+# the whole build
+apk_add() {
+	for try in 1 2 3; do
+		apk add --no-cache "$@" && return 0
+		echo "apk add failed (try $try of 3), retrying..." >&2
+		sleep $((try * 10))
+		apk update >/dev/null 2>&1 || true
+	done
+	return 1
+}
 
-apk add --no-cache \
+for try in 1 2 3; do apk update && break; sleep 10; done
+
+apk_add \
 	alpine-base openrc busybox-openrc util-linux e2fsprogs e2fsprogs-extra parted \
 	dropbear dropbear-scp \
 	wpa_supplicant wireless-regdb iw dhcpcd \
@@ -41,7 +54,7 @@ rm -rf /lib/firmware
 ln -s /usr/lib/firmware /lib/firmware
 rmdir /lib/modules 2>/dev/null || true
 ln -sfn /usr/lib/modules /lib/modules
-apk add --no-cache --force-overwrite \
+apk_add --force-overwrite \
 	raspios-firmware raspios-kernel-v8 raspios-kernel-2712
 
 update-ca-certificates >/dev/null 2>&1 || true

@@ -62,11 +62,22 @@ jobs:
           built_date=$(echo "$MANIFEST" | sed -n 's/^BUILD_DATE=//p')
           latest_kernel=$(curl -fsSL "$RASPINE_REPO/v$ALPINE_VERSION/community/$ALPINE_ARCH/APKINDEX.tar.gz" \
             | tar -xzO APKINDEX | awk '/^P:raspios-kernel-v8$/ { getline; sub(/^V:/, ""); print; exit }')
+          # The M17 packages, in the same "name-version ..." form the
+          # manifest records
+          built_m17=$(echo "$MANIFEST" | sed -n 's/^M17_PACKAGES=//p')
+          m17_index=$(curl -fsSL "$M17_APK_REPO/v$ALPINE_VERSION/m17/$ALPINE_ARCH/APKINDEX.tar.gz" | tar -xzO APKINDEX)
+          latest_m17=$(for p in m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 \
+            m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay; do
+            printf '%s-%s ' "$p" "$(echo "$m17_index" | awk -v p="P:$p" '$0 == p { getline; sub(/^V:/, ""); print; exit }')"
+            done | sed 's/ $//')
           age_days=999
           [ -n "$built_date" ] && age_days=$(( ( $(date -u +%s) - $(date -u -d "$built_date" +%s) ) / 86400 ))
           echo "Last release: kernel ${built_kernel:-?}, commit ${built_commit:-?}, ${age_days} days old"
           echo "Now:          kernel ${latest_kernel:-?}, commit ${{ github.sha }}"
+          echo "M17 packages: ${built_m17:-?}"
+          echo "         now: ${latest_m17:-?}"
           if [ -z "$built_kernel" ] || [ "$built_kernel" != "$latest_kernel" ] \
+             || [ "$built_m17" != "$latest_m17" ] \
              || [ "$built_commit" != "${{ github.sha }}" ] || [ "$age_days" -ge 30 ]; then
             echo "release=true" >> "$GITHUB_OUTPUT"
           else

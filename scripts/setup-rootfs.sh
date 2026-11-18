@@ -3,14 +3,13 @@
 # Part of m17-hotspot-os. Base system setup follows Pi-Star OS by Andy
 # Taylor, MW0MWZ (https://github.com/MW0MWZ/Pi-Star_OS), GPL-2.0.
 #
-# Expects in the environment: ALPINE_VERSION, RASPINE_REPO,
+# Expects in the environment: ALPINE_VERSION, RASPINE_REPO, M17_APK_REPO,
 # DEFAULT_HOSTNAME, DEFAULT_USER, DEFAULT_PASSWORD, DEFAULT_WIFI_COUNTRY.
-# Expects the overlay to be applied and the M17 components staged in
-# /tmp/m17-stage (see fetch-m17.sh).
+# Expects the overlay to be applied, and the M17 package repository's key
+# in /etc/apk/keys (build-image.sh copies keys/m17-apk.rsa.pub there).
 
 set -eu
 
-STAGE=/tmp/m17-stage
 PHP=php84
 
 # ── Packages ─────────────────────────────────────────────────────────
@@ -22,7 +21,9 @@ cat > /etc/apk/repositories <<EOF
 $RASPINE_REPO/v${ALPINE_VERSION}/community
 https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main
 https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community
+$M17_APK_REPO/v${ALPINE_VERSION}/m17
 EOF
+[ -f /etc/apk/keys/m17-apk.rsa.pub ] || { echo "m17-apk.rsa.pub is not in /etc/apk/keys" >&2; exit 1; }
 # apk_add ARGS - apk add, retried: a package download from a mirror or
 # behind a CDN occasionally fails partway, and one bad fetch shouldn't fail
 # the whole build
@@ -58,6 +59,13 @@ apk_add --force-overwrite \
 	raspios-firmware raspios-kernel-v8 raspios-kernel-2712
 
 update-ca-certificates >/dev/null 2>&1 || true
+
+# M17 software from the m17-apk repository. It stays in
+# /etc/apk/repositories, so the hotspot can update these with apk.
+apk_add \
+	m17-gateway m17-gateway-openrc rpi-dashboard \
+	m17-firmware-cc1200 m17-firmware-mmdvm-hs m17-firmware-mmdvm \
+	m17-sx1255-overlay
 
 # ── Services ─────────────────────────────────────────────────────────
 for s in devfs dmesg hwdrivers mdev; do rc-update add "$s" sysinit; done
@@ -190,59 +198,17 @@ echo "$DEFAULT_USER:$DEFAULT_PASSWORD" | chpasswd
 passwd -l root >/dev/null
 chmod 0600 /etc/doas.d/m17os.conf
 
-# m17-gateway runs as its own user; the dashboard (www-data) may edit its
-# configuration through the m17-gateway-control group, as on Debian
-addgroup -S m17-gateway
-addgroup -S m17-gateway-control
-adduser -S -D -H -h /opt/m17/m17-gateway -s /sbin/nologin -G m17-gateway m17-gateway
-for g in dialout gpio spi audio; do addgroup m17-gateway "$g"; done
-getent passwd www-data >/dev/null || adduser -S -D -H -h /var/www -s /sbin/nologin -G www-data www-data
-addgroup www-data m17-gateway-control
-
-# ── m17-gateway ──────────────────────────────────────────────────────
-mkdir -p /opt/m17
-cp -a "$STAGE/gateway/opt/m17/m17-gateway" /opt/m17/
-chown -R root:root /opt/m17
-chmod 0755 /opt/m17 /opt/m17/m17-gateway /opt/m17/m17-gateway/m17-gateway
-
-# The configuration lives in /etc/m17-gateway/ so it persists on /data;
-# /etc/m17-gateway.ini is where the gateway and dashboard look for it.
-mkdir -p /etc/m17-gateway
-INI=/etc/m17-gateway/m17-gateway.ini
-sed 's/^#/;/' "$STAGE/gateway/etc/m17-gateway.ini.sample" > "$INI"
+# ── M17 software settings ────────────────────────────────────────────
+# The packages created the m17-gateway user, its configuration in
+# /etc/m17-gateway/ (persistent on /data), the host files in
+# /var/lib/m17-gateway/ and the dashboard's settings in
+# /var/lib/m17-dashboard/. The image only changes defaults.
 . /usr/local/lib/m17os/ini.sh
-ini_set "$INI" General DashboardLog /var/log/m17-gateway/dashboard.log
-ini_set "$INI" Reflector HostFile /opt/m17/rpi-dashboard/files/M17Hosts.txt
-ini_set "$INI" Reflector OverrideHostFile /opt/m17/rpi-dashboard/files/OverrideHosts.txt
-ini_set "$INI" Log Level INFO
-chown m17-gateway:m17-gateway-control "$INI"
-chmod 0664 "$INI"
-ln -sf m17-gateway/m17-gateway.ini /etc/m17-gateway.ini
+ini_set /etc/m17-gateway/m17-gateway.ini Log Level INFO
+[ -L /etc/m17-gateway.ini ] || { echo "/etc/m17-gateway.ini link missing" >&2; exit 1; }
 
-# ── rpi-dashboard ────────────────────────────────────────────────────
-# Code in /opt/m17/rpi-dashboard (part of the slot, replaced by upgrades);
-# its config.php and files/ in /var/lib/m17-dashboard (persistent).
-cp -a "$STAGE/dashboard" /opt/m17/rpi-dashboard
-rm -rf /opt/m17/rpi-dashboard/files /opt/m17/rpi-dashboard/config.php
-STATE=/var/lib/m17-dashboard
-mkdir -p "$STATE/files"
-: > "$STATE/config.php"
-cp "$STAGE/M17Hosts.txt" "$STATE/files/M17Hosts.txt"
-cp "$STAGE/gateway/opt/m17/m17-gateway/OverrideHosts.txt" "$STATE/files/OverrideHosts.txt"
-ln -sf /var/log/m17-gateway/dashboard.log "$STATE/files/dashboard.log"
-ln -sf /etc/m17-gateway.ini "$STATE/files/m17-gateway.ini"
-ln -s "$STATE/config.php" /opt/m17/rpi-dashboard/config.php
-ln -s "$STATE/files" /opt/m17/rpi-dashboard/files
-chown -R root:www-data /opt/m17/rpi-dashboard
-chmod -R g-w,o-w /opt/m17/rpi-dashboard
-chown -R www-data:www-data "$STATE"
-chmod 0775 "$STATE" "$STATE/files"
-chmod 0664 "$STATE/config.php" "$STATE/files/M17Hosts.txt" "$STATE/files/OverrideHosts.txt"
-rm -f /opt/m17/m17-gateway/M17Hosts.txt /opt/m17/m17-gateway/OverrideHosts.txt
-
-# The SX1255 HAT's audio codec overlay. It goes in the rootfs's
-# /boot/firmware/overlays so every slot built from this rootfs has it.
-cp "$STAGE/overlays/genericstereoaudiocodec.dtbo" /boot/firmware/overlays/
+# The dashboard's nginx site, as the default site
+cp /usr/share/rpi-dashboard/nginx-site.conf /etc/nginx/http.d/default.conf
 
 # PHP-FPM: run as www-data on localhost, with a PATH that finds the
 # systemctl stand-in in /usr/local/bin. ondemand keeps memory use low.
@@ -259,8 +225,6 @@ grep -q '^env\[PATH\]' "$POOL" || \
 # The dashboard's own login is the protection; keep sessions in /tmp
 sed -i 's|^;*session.save_path = .*|session.save_path = "/tmp"|' /etc/$PHP/php.ini
 
-# nginx: our site replaces the default one
-rm -f /etc/nginx/http.d/default.conf.apk-new
 
 # ── Home directory skeleton ──────────────────────────────────────────
 mkdir -p "/home/$DEFAULT_USER"

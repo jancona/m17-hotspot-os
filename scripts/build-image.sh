@@ -116,10 +116,9 @@ if [ "$(uname -m)" != "aarch64" ]; then
 	cp "$QEMU" "$ROOT/usr/bin/qemu-aarch64-static"
 fi
 
-# ── M17 components (from upstream until the M17 apk repository exists) ─
-STAGE="$ROOT/tmp/m17-stage"
-mkdir -p "$STAGE"
-"$REPO_DIR/scripts/fetch-m17.sh" "$STAGE"
+# The M17 package repository's key: pinned in this repository, not
+# downloaded, so the build trusts exactly this key
+install -m 0644 "$REPO_DIR/keys/m17-apk.rsa.pub" "$ROOT/etc/apk/keys/m17-apk.rsa.pub"
 
 # ── Overlay and chroot setup ─────────────────────────────────────────
 log "Applying overlay"
@@ -137,6 +136,7 @@ chroot "$ROOT" /usr/bin/env -i \
 	PATH=/usr/sbin:/usr/bin:/sbin:/bin \
 	ALPINE_VERSION="$ALPINE_VERSION" \
 	RASPINE_REPO="$RASPINE_REPO" \
+	M17_APK_REPO="$M17_APK_REPO" \
 	DEFAULT_HOSTNAME="$DEFAULT_HOSTNAME" \
 	DEFAULT_USER="$DEFAULT_USER" \
 	DEFAULT_PASSWORD="$DEFAULT_PASSWORD" \
@@ -144,7 +144,7 @@ chroot "$ROOT" /usr/bin/env -i \
 	/bin/sh /tmp/setup-rootfs.sh
 
 umount "$ROOT/dev/pts" "$ROOT/dev" "$ROOT/sys" "$ROOT/proc"
-rm -rf "$ROOT/tmp/setup-rootfs.sh" "$STAGE"
+rm -f "$ROOT/tmp/setup-rootfs.sh"
 # The image must not carry the build host's resolver settings
 : > "$ROOT/etc/resolv.conf"
 
@@ -156,14 +156,24 @@ else
 	log "No keys/release.pub: this image accepts unsigned OS updates"
 fi
 
+# pkg_version NAME - the version of an installed package in the rootfs
+pkg_version() {
+	awk -v p="P:$1" '$0 == p { getline; sub(/^V:/, ""); print; exit }' "$ROOT/lib/apk/db/installed"
+}
+# Every package from the M17 repository, for the manifest: a change here
+# is a reason to build a new release
+M17_PACKAGES=$(for p in m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 \
+	m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay; do
+	printf '%s-%s ' "$p" "$(pkg_version "$p")"; done | sed 's/ $//')
+
 cat > "$ROOT/etc/m17os-release" <<EOF
 m17-hotspot-os
 Version: ${VERSION}
 Build Date: ${BUILD_DATE}
 Alpine Version: ${ALPINE_RELEASE:-$ALPINE_VERSION}
 Architecture: ${ALPINE_ARCH}
-m17-gateway: ${M17_GATEWAY_VERSION}
-rpi-dashboard: ${RPI_DASHBOARD_REF}
+m17-gateway: $(pkg_version m17-gateway)
+rpi-dashboard: $(pkg_version rpi-dashboard)
 Base: Alpine Linux with the Raspberry Pi OS kernel from RasPINE
 EOF
 
@@ -210,9 +220,10 @@ ARCH=${ALPINE_ARCH}
 ALPINE_VERSION=${ALPINE_RELEASE:-$ALPINE_VERSION}
 ROOTFS_FILENAME=${ROOTFS}
 ROOTFS_SHA256=${ROOTFS_SHA256}
-M17_GATEWAY_VERSION=${M17_GATEWAY_VERSION}
-RPI_DASHBOARD_REF=${RPI_DASHBOARD_REF}
-RASPINE_KERNEL=$(awk '/^P:raspios-kernel-v8$/ { getline; sub(/^V:/, ""); print; exit }' "$ROOT/lib/apk/db/installed")
+M17_GATEWAY_VERSION=$(pkg_version m17-gateway)
+RPI_DASHBOARD_VERSION=$(pkg_version rpi-dashboard)
+M17_PACKAGES=${M17_PACKAGES}
+RASPINE_KERNEL=$(pkg_version raspios-kernel-v8)
 BUILD_COMMIT=${BUILD_COMMIT:-$(git -C "$REPO_DIR" rev-parse --verify -q HEAD 2>/dev/null || echo unknown)}
 EOF
 

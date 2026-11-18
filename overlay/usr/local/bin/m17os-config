@@ -76,6 +76,40 @@ gateway_set() {
 	ini_set "$GATEWAY_INI" "$1" "$2" "$3" && GATEWAY_CHANGED=true
 }
 
+# ── Migrations for persisted files ───────────────────────────────────
+# Images up to 2026.11.18.2 installed the M17 software themselves and kept
+# the reflector host files in the dashboard's files/ directory, with the
+# gateway pointed there. The m17-apk packages keep them in
+# /var/lib/m17-gateway/ and give the dashboard symlinks. Move the user's
+# copies (OverrideHosts.txt may hold their own reflectors) and update the
+# gateway's paths. Runs once: afterwards files/ only holds symlinks.
+migrate_host_files() {
+	dash_files="${M17OS_DASHBOARD_STATE:-/var/lib/m17-dashboard}/files"
+	gw_state="${M17OS_GATEWAY_STATE:-/var/lib/m17-gateway}"
+	[ -d "$dash_files" ] && [ -d "$gw_state" ] || return 0
+	for f in M17Hosts.txt OverrideHosts.txt; do
+		[ -f "$dash_files/$f" ] && [ ! -L "$dash_files/$f" ] || continue
+		cp -p "$dash_files/$f" "$gw_state/$f"
+		chown m17-gateway:m17-gateway-control "$gw_state/$f" 2>/dev/null
+		chmod 0664 "$gw_state/$f"
+		rm -f "$dash_files/$f"
+		ln -s "$gw_state/$f" "$dash_files/$f"
+		log "Moved $f to $gw_state"
+	done
+	[ -f "$GATEWAY_INI" ] || return 0
+	for key in HostFile:M17Hosts.txt OverrideHostFile:OverrideHosts.txt; do
+		name="${key%%:*}"
+		file="${key#*:}"
+		case "$(ini_get "$GATEWAY_INI" Reflector "$name")" in
+			/opt/m17/rpi-dashboard/files/*|/var/lib/m17-dashboard/files/*)
+				ini_set "$GATEWAY_INI" Reflector "$name" "$gw_state/$file"
+				log "Set $name to $gw_state/$file"
+				;;
+		esac
+	done
+}
+migrate_host_files
+
 # ── Phase 1: source selection ─────────────────────────────────────────
 if [ -f "$CONFIG_FILE" ]; then
 	SOURCE="$CONFIG_FILE"

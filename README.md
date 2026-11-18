@@ -12,7 +12,7 @@ Download the image, write it to a card, boot, and set your callsign. No Raspberr
 |---|---|
 | **Base** | Alpine Linux userland with the Raspberry Pi OS kernel and firmware, from [RasPINE](https://github.com/MW0MWZ/RasPINE) |
 | **Hardware** | Raspberry Pi Zero 2 W, 3, 4, 5 (64-bit only) |
-| **M17** | m17-gateway, rpi-dashboard (nginx + PHP-FPM), the SX1255 I2S codec overlay, stm32flash |
+| **M17** | m17-gateway, rpi-dashboard (nginx + PHP-FPM), HAT firmware (CC1200, MMDVM_HS, MMDVM) and the SX1255 I2S codec overlay, from the [m17-apk](https://github.com/jancona/m17-apk) package repository; stm32flash |
 | **Updates** | A/B root partitions with boot watchdog, health check and automatic rollback, based on [Pi-Star OS](https://github.com/MW0MWZ/Pi-Star_OS) |
 | **Footprint** | Logs in RAM to spare the SD card; settings on a separate `/data` partition |
 
@@ -75,7 +75,7 @@ How it works:
 - `/data` holds everything that must survive an update: WiFi, SSH keys, the gateway configuration, the dashboard's settings and host files, home directories, and the `m17` password.
 - If a slot won't boot at all, put the card in a PC and change `os_prefix=slotA/` to `os_prefix=slotB/` (or the reverse) at the end of `config.txt`.
 
-Automatic, unattended updates are planned once releases are signed (see [Signing](#signing-releases)).
+The M17 software can also be updated on its own, between OS releases: `doas apk update && doas apk upgrade`. Those changes live in the running slot, so the next OS update replaces them with the versions it was built with (which are at least as new). Automatic, unattended updates of both are planned.
 
 ## Hardware notes
 
@@ -87,7 +87,7 @@ Automatic, unattended updates are planned once releases are signed (see [Signing
 
 ## Building
 
-Images are built by GitHub Actions on arm64 runners ([`.github/workflows/build.yml`](.github/workflows/build.yml)): on every push and pull request (as a check), weekly when the kernel changes or the last release is a month old, and on demand. Releases are named `YYYY.MM.DD.N`.
+Images are built by GitHub Actions on arm64 runners ([`.github/workflows/build.yml`](.github/workflows/build.yml)): on every push and pull request (as a check), weekly when the kernel or an M17 package changes or the last release is a month old, and on demand. Releases are named `YYYY.MM.DD.N`.
 
 To build locally you need Linux (arm64, or x86 with qemu-user-static and binfmt) and root:
 
@@ -96,13 +96,13 @@ sudo apt-get install parted dosfstools e2fsprogs curl xz-utils zstd git rsync fd
 sudo scripts/build-image.sh 2026.11.17.1 out
 ```
 
-On a Mac, run the same thing in a privileged `debian:trixie` container (Docker or Colima). Component versions (Alpine, m17-gateway, rpi-dashboard) are pinned in [`build.conf`](build.conf).
+On a Mac, run the same thing in a privileged `debian:trixie` container (Docker or Colima). The Alpine version and the package repositories are set in [`build.conf`](build.conf). The M17 software's versions are set in [m17-apk](https://github.com/jancona/m17-apk); each release's `manifest.txt` lists the M17 packages it contains.
 
 | Path | |
 |---|---|
 | `scripts/build-image.sh` | Partitions the image, installs Alpine, runs the chroot setup, builds slot A, writes the rootfs tarball and manifest |
-| `scripts/setup-rootfs.sh` | Runs inside the chroot: packages, services, users, gateway and dashboard |
-| `scripts/fetch-m17.sh` | Downloads m17-gateway, rpi-dashboard and the I2S overlay (until there is an M17 apk repository) |
+| `scripts/setup-rootfs.sh` | Runs inside the chroot: packages (including the M17 ones), services, users, and the image's settings for the gateway and dashboard |
+| `keys/m17-apk.rsa.pub` | The M17 package repository's signing key, trusted by the build and by every hotspot |
 | `overlay/` | Files copied into the root filesystem: A/B tools, init scripts, nginx, doas |
 | `boot/` | `config.txt`, `slot.conf` and the `m17-config.txt` sample for the boot partition |
 | `tests/` | `unit.sh` (libraries and tools), `run-smoke.sh` (sets up the rootfs in a container and checks the result) |

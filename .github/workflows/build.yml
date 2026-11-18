@@ -67,7 +67,7 @@ jobs:
           built_m17=$(echo "$MANIFEST" | sed -n 's/^M17_PACKAGES=//p')
           m17_index=$(curl -fsSL "$M17_APK_REPO/v$ALPINE_VERSION/m17/$ALPINE_ARCH/APKINDEX.tar.gz" | tar -xzO APKINDEX)
           latest_m17=$(for p in m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 \
-            m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay; do
+            m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay m17-admin m17-admin-openrc; do
             printf '%s-%s ' "$p" "$(echo "$m17_index" | awk -v p="P:$p" '$0 == p { getline; sub(/^V:/, ""); print; exit }')"
             done | sed 's/ $//')
           age_days=999

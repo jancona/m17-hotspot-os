@@ -65,7 +65,8 @@ update-ca-certificates >/dev/null 2>&1 || true
 apk_add \
 	m17-gateway m17-gateway-openrc rpi-dashboard \
 	m17-firmware-cc1200 m17-firmware-mmdvm-hs m17-firmware-mmdvm \
-	m17-sx1255-overlay
+	m17-sx1255-overlay \
+	m17-admin m17-admin-openrc
 
 # ── Services ─────────────────────────────────────────────────────────
 for s in devfs dmesg hwdrivers mdev; do rc-update add "$s" sysinit; done
@@ -78,7 +79,7 @@ rc-update add swclock boot
 for s in m17os-data-resize m17os-varlog m17os-clock m17os-bindmounts m17os-config m17os-boot-watchdog; do
 	rc-update add "$s" boot
 done
-for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17os-health-check; do
+for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17-admin m17os-health-check; do
 	rc-update add "$s" default
 done
 
@@ -215,6 +216,25 @@ ln -sfn /data/log/m17-gateway/dashboard.log /var/lib/m17-dashboard/files/dashboa
 
 # The dashboard's nginx site, as the default site
 cp /usr/share/rpi-dashboard/nginx-site.conf /etc/nginx/http.d/default.conf
+# The setup wizard (m17-admin) at /setup/. ^~ keeps the dashboard's PHP
+# location from matching these paths.
+awk '
+	/^[[:space:]]*location ~ \\\.php\$ \{/ && !done {
+		print "\t# The setup wizard (m17-admin)"
+		print "\tlocation = /setup { return 302 /setup/; }"
+		print "\tlocation ^~ /setup/ {"
+		print "\t\tproxy_pass http://127.0.0.1:8090;"
+		print "\t\tproxy_set_header Host $host;"
+		print "\t\tproxy_set_header X-Forwarded-For $remote_addr;"
+		print "\t\tproxy_read_timeout 60s;"
+		print "\t}"
+		print ""
+		done = 1
+	}
+	{ print }
+	END { if (!done) exit 1 }
+' /etc/nginx/http.d/default.conf > /tmp/default.conf || { echo "no PHP location in the dashboard's nginx site" >&2; exit 1; }
+mv /tmp/default.conf /etc/nginx/http.d/default.conf
 
 # PHP-FPM: run as www-data on localhost, with a PATH that finds the
 # systemctl stand-in in /usr/local/bin. ondemand keeps memory use low.

@@ -42,7 +42,7 @@ fi
 section "Packages and boot files"
 for p in raspios-kernel-v8 raspios-kernel-2712 raspios-firmware nginx php84-fpm doas minisign avahi stm32flash \
 	m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 m17-firmware-mmdvm-hs \
-	m17-firmware-mmdvm m17-sx1255-overlay; do
+	m17-firmware-mmdvm m17-sx1255-overlay m17-admin m17-admin-openrc; do
 	apk info -e "$p" >/dev/null && ok || fail "package $p not installed"
 done
 for f in kernel8.img kernel_2712.img cmdline.txt overlays/genericstereoaudiocodec.dtbo; do
@@ -355,7 +355,7 @@ adduser -S -D -H -s /sbin/nologin m17-admin 2>/dev/null
 helper=/usr/local/libexec/m17os/admin-helper
 as_admin() { su -s /bin/sh m17-admin -c "$*"; }
 out=$(as_admin "doas -n $helper wifi-configured" 2>&1)
-check "helper: configured networks" "WizardNet" "$out"
+check "helper: configured networks" "country=GB ssid=WizardNet" "$(echo $out)"
 printf 'AUTO_UPDATE=notify\nUPDATE_HOUR=4\nevil=$(id)\n' > /var/lib/m17os/autoupdate.conf
 out=$(as_admin "doas -n $helper update-policy" 2>&1)
 check "helper: update policy" "AUTO_UPDATE=notify UPDATE_HOUR=4" "$(echo $out)"
@@ -395,6 +395,24 @@ M17OS_UPGRADE=/tmp/no-os-update M17OS_DASHBOARD_LOG=/nonexistent sh /usr/local/b
 check "package dry run exit" 0 "$?"
 grep -qE '^RESULT=(current|available)' /var/lib/m17os/autoupdate.status && ok || fail "package dry run: $(cat /tmp/au-dry2.log)"
 rm -f /var/lib/m17os/autoupdate.conf
+
+section "Setup wizard (m17-admin) behind nginx"
+[ -L /etc/runlevels/default/m17-admin ] && ok || fail "m17-admin not in the default runlevel"
+check "m17-admin state dir" "m17-admin:700" "$(stat -c %U:%a /var/lib/m17-admin)"
+id m17-admin | grep -q dialout && ok || fail "m17-admin can't open the serial port: $(id m17-admin)"
+grep -q 'location \^~ /setup/' /etc/nginx/http.d/default.conf && ok || fail "no /setup/ location in the nginx site"
+nginx -t 2>/dev/null && ok || fail "nginx -t with the /setup/ location"
+nginx -s reload 2>/dev/null || nginx
+su -s /bin/sh m17-admin -c '/usr/bin/m17-admin -listen 127.0.0.1:8090 -state-dir /var/lib/m17-admin >/tmp/m17-admin.log 2>&1 &'
+for i in 1 2 3 4 5 6 7 8 9 10; do wget -q -O /dev/null http://127.0.0.1:8090/setup/static/style.css 2>/dev/null && break; sleep 1; done
+wget -q -O /tmp/setup.html http://127.0.0.1/setup/ && ok || fail "GET /setup/ through nginx: $(tail -3 /tmp/m17-admin.log)"
+# A dashboard password was set above, so the wizard asks for it
+grep -q 'Admin password' /tmp/setup.html && grep -q '/setup/login' /tmp/setup.html && ok || \
+	fail "the wizard's login page didn't come through nginx: $(head -c 300 /tmp/setup.html)"
+wget -q -O /tmp/setup.css http://127.0.0.1/setup/static/style.css && grep -q 'prefers-color-scheme' /tmp/setup.css && ok || \
+	fail "the wizard's stylesheet didn't come through nginx"
+wget -q -O /dev/null http://127.0.0.1/index.php && ok || fail "the dashboard stopped working with the /setup/ location"
+pkill -f '/usr/bin/m17-admin' 2>/dev/null
 
 section "Gateway health hook"
 /etc/m17os/health.d/50-m17-gateway >/tmp/hook 2>&1

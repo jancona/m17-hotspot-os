@@ -38,7 +38,7 @@ IDLE_WAIT="${M17OS_IDLE_WAIT:-1800}"   # seconds to wait for an idle gateway
 IDLE_POLL="${M17OS_IDLE_POLL:-30}"
 MAX_DELAY="${M17OS_MAX_DELAY:-2700}"   # random start delay in the hour
 M17_PACKAGES="m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 \
-m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay"
+m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay m17-admin m17-admin-openrc"
 
 # shellcheck source=../lib/m17os/bootslot.sh
 . "$LIB_DIR/bootslot.sh"

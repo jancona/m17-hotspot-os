@@ -10,7 +10,8 @@
 #                                   gateway, reconnects WiFi or reboots
 #   admin-helper wifi-scan          networks in range:
 #                                   signal<TAB>MHz<TAB>flags<TAB>ssid
-#   admin-helper wifi-configured    names of the saved WiFi networks
+#   admin-helper wifi-configured    the saved WiFi settings, never passwords:
+#                                   country=XX and ssid=NAME lines
 #   admin-helper update-policy      AUTO_UPDATE=... and UPDATE_HOUR=...
 #   admin-helper gateway stop|start|status
 #   admin-helper reboot
@@ -66,7 +67,8 @@ case "${1:-}" in
 	wifi-configured)
 		[ $# -eq 1 ] || die "wifi-configured takes no arguments"
 		[ -f "$WPA_CONF" ] || exit 0
-		sed -n 's/^[[:space:]]*ssid="\(.*\)"[[:space:]]*$/\1/p' "$WPA_CONF"
+		sed -n -e 's/^country=\([A-Z][A-Z]\)[[:space:]]*$/country=\1/p' \
+			-e 's/^[[:space:]]*ssid="\(.*\)"[[:space:]]*$/ssid=\1/p' "$WPA_CONF"
 		;;
 	update-policy)
 		[ $# -eq 1 ] || die "update-policy takes no arguments"

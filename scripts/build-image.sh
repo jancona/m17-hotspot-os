@@ -163,7 +163,7 @@ pkg_version() {
 # Every package from the M17 repository, for the manifest: a change here
 # is a reason to build a new release
 M17_PACKAGES=$(for p in m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 \
-	m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay; do
+	m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay m17-admin m17-admin-openrc; do
 	printf '%s-%s ' "$p" "$(pkg_version "$p")"; done | sed 's/ $//')
 
 cat > "$ROOT/etc/m17os-release" <<EOF

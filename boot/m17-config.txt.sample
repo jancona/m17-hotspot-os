@@ -5,6 +5,9 @@
 # applied on the next boot, then THIS FILE IS DELETED because it may hold
 # passwords.
 #
+# Settings that can't be applied (a misspelled key, a short password, a bad
+# frequency) are reported by "m17os-slot-info" and in /data/m17os/config.log.
+#
 # It works for the first boot and for recovery: if the WiFi details change,
 # put the card in a PC, drop a new m17-config.txt here, and boot again.
 
@@ -58,5 +61,7 @@
 #reflector=M17-M17
 #module=C
 
-# Password for the dashboard's Gateway and Settings pages (8+ characters)
+# Password for the dashboard's Gateway and Settings pages. It must be at
+# least 8 characters: a shorter one is ignored (the reason is logged; see
+# m17os-slot-info).
 #dashboard_password=choose-something

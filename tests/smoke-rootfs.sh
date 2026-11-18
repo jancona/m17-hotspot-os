@@ -168,6 +168,22 @@ check "user.conf mode" 600 "$(stat -c %a /data/m17os/user.conf)"
 grep -q 'secret-pass\|homepassword\|dashpass123' /data/m17os/user.conf /data/m17os/config.log && \
 	fail "a plaintext password was saved or logged" || ok
 
+section "m17os-config: problems are reported, passwords are not"
+before=$(grep "admin_password_hash" /var/lib/m17-dashboard/config.php)
+printf 'dashboard_password=short7\ndashbord_password=misspelled-secret\ncallsign=bad*call\n' > /boot/firmware/m17-config.txt
+sh /usr/local/bin/m17os-config > /tmp/warn.log 2>&1
+check "warnings exit" 0 "$?"
+check "short password left the old one" "$before" "$(grep "admin_password_hash" /var/lib/m17-dashboard/config.php)"
+grep -q 'config: dashboard_password not set: it must be at least 8 characters (it has 6)' /data/log/m17os-events.log && ok || \
+	fail "short password not in the event log: $(tail -3 /data/log/m17os-events.log)"
+grep -q "config: unknown setting 'dashbord_password'" /data/log/m17os-events.log && ok || fail "unknown key not reported"
+grep -q "config: invalid callsign 'BAD\*CALL'" /data/log/m17os-events.log && ok || fail "bad callsign not reported"
+grep -q 'WARNING: dashboard_password not set' /data/m17os/config.log && ok || fail "short password not in config.log"
+grep -q 'short7\|misspelled-secret' /data/log/m17os-events.log /data/m17os/config.log && fail "a password reached a log" || ok
+[ -f /boot/firmware/slot.conf ] || cp "$REPO/boot/slot.conf" /boot/firmware/slot.conf
+m17os_info=$(/usr/local/bin/m17os-slot-info)
+case "$m17os_info" in *"unknown setting 'dashbord_password'"*) ok ;; *) fail "m17os-slot-info doesn't show config problems" ;; esac
+
 section "m17os-config: HAT change needs a reboot"
 printf 'hat=sx1255\n' > /boot/firmware/m17-config.txt
 sh /usr/local/bin/m17os-config > /tmp/config2.log 2>&1

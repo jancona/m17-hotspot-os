@@ -34,10 +34,20 @@ PW_MARKER="/etc/.m17os-password-restored"
 
 # shellcheck source=../lib/m17os/ini.sh
 . "$LIB_DIR/ini.sh"
+# shellcheck source=../lib/m17os/bootslot.sh
+. "$LIB_DIR/bootslot.sh"   # for slot_event
 
 log() {
 	[ -d "$SAVED_DIR" ] || mkdir -p "$SAVED_DIR"
 	echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# warn MESSAGE - a setting that was not applied: in the config log and in
+# the event log m17os-slot-info shows, so it isn't lost silently. Never
+# pass a password in MESSAGE.
+warn() {
+	log "WARNING: $1"
+	slot_event "config: $1"
 }
 
 shadow_hash() {
@@ -81,7 +91,7 @@ mhz_to_hz() {
 
 gateway_set() {
 	if [ ! -f "$GATEWAY_INI" ]; then
-		log "WARNING: $GATEWAY_INI not found, cannot set $2"
+		warn "$GATEWAY_INI not found, cannot set $2"
 		return
 	fi
 	ini_set "$GATEWAY_INI" "$1" "$2" "$3" && GATEWAY_CHANGED=true
@@ -259,7 +269,7 @@ while IFS='=' read -r key value; do
 			;;
 		hostname)
 			case "$value" in
-				*[!A-Za-z0-9-]*|-*) log "WARNING: invalid hostname '$value'"; continue ;;
+				*[!A-Za-z0-9-]*|-*) warn "invalid hostname '$value'"; continue ;;
 			esac
 			SAVE_HOSTNAME="$value"
 			if [ "$(cat /etc/hostname 2>/dev/null)" != "$value" ]; then
@@ -278,7 +288,7 @@ while IFS='=' read -r key value; do
 					echo "$value" > /etc/timezone
 				fi
 			else
-				log "WARNING: timezone '$value' not found"
+				warn "timezone '$value' not found"
 			fi
 			;;
 
@@ -287,7 +297,7 @@ while IFS='=' read -r key value; do
 			if $FROM_CONFIG_TXT; then
 				value=$(echo "$value" | tr '[:lower:]' '[:upper:]')
 				case "$value" in
-					*[!A-Z0-9/.\ -]*) log "WARNING: invalid callsign '$value'"; continue ;;
+					*[!A-Z0-9/.\ -]*) warn "invalid callsign '$value'"; continue ;;
 				esac
 				log "Setting callsign: $value"
 				gateway_set General Callsign "$value"
@@ -300,7 +310,7 @@ while IFS='=' read -r key value; do
 				case $? in
 					0) GATEWAY_CHANGED=true ;;
 					3) GATEWAY_CHANGED=true; REBOOT=true ;;
-					*) log "WARNING: could not set HAT type '$value'" ;;
+					*) warn "could not set HAT type '$value'" ;;
 				esac
 			fi
 			;;
@@ -309,7 +319,7 @@ while IFS='=' read -r key value; do
 			# default speed wherever it appears in the file
 			if $FROM_CONFIG_TXT; then
 				case "$value" in
-					*[!0-9]*) log "WARNING: invalid modem_speed '$value'" ;;
+					*[!0-9]*) warn "invalid modem_speed '$value'" ;;
 					*) MODEM_SPEED="$value" ;;
 				esac
 			fi
@@ -323,7 +333,7 @@ while IFS='=' read -r key value; do
 						tx_frequency) gateway_set Radio TXFrequency "$hz" ;;
 					esac
 				else
-					log "WARNING: invalid $key '$value'"
+					warn "invalid $key '$value'"
 				fi
 			fi
 			;;
@@ -334,7 +344,7 @@ while IFS='=' read -r key value; do
 					gateway_set Radio RXFrequency "$hz"
 					gateway_set Radio TXFrequency "$hz"
 				else
-					log "WARNING: invalid frequency '$value'"
+					warn "invalid frequency '$value'"
 				fi
 			fi
 			;;
@@ -342,14 +352,14 @@ while IFS='=' read -r key value; do
 			if $FROM_CONFIG_TXT; then
 				case "$value" in
 					true|false) gateway_set Radio Duplex "$value" ;;
-					*) log "WARNING: duplex must be true or false" ;;
+					*) warn "duplex must be true or false" ;;
 				esac
 			fi
 			;;
 		power)
 			if $FROM_CONFIG_TXT; then
 				case "$value" in
-					*[!0-9-]*) log "WARNING: invalid power '$value'" ;;
+					*[!0-9-]*) warn "invalid power '$value'" ;;
 					*) gateway_set Radio Power "$value" ;;
 				esac
 			fi
@@ -357,7 +367,7 @@ while IFS='=' read -r key value; do
 		reflector)
 			if $FROM_CONFIG_TXT; then
 				case "$value" in
-					*[!A-Za-z0-9_-]*) log "WARNING: invalid reflector '$value'" ;;
+					*[!A-Za-z0-9_-]*) warn "invalid reflector '$value'" ;;
 					*) log "Setting reflector: $value"; gateway_set Reflector Name "$value" ;;
 				esac
 			fi
@@ -367,7 +377,7 @@ while IFS='=' read -r key value; do
 				value=$(echo "$value" | tr '[:lower:]' '[:upper:]')
 				case "$value" in
 					[A-Z]) gateway_set Reflector Module "$value" ;;
-					*) log "WARNING: module must be a single letter A-Z" ;;
+					*) warn "module must be a single letter A-Z" ;;
 				esac
 			fi
 			;;
@@ -377,21 +387,30 @@ while IFS='=' read -r key value; do
 				case "$key:$value" in
 					auto_update:auto|auto_update:notify|auto_update:off) set_autoupdate AUTO_UPDATE "$value" ;;
 					update_hour:[0-9]|update_hour:1[0-9]|update_hour:2[0-3]) set_autoupdate UPDATE_HOUR "$value" ;;
-					*) log "WARNING: invalid $key '$value'" ;;
+					*) warn "invalid $key '$value'" ;;
 				esac
 			fi
 			;;
 		dashboard_password)
 			if $FROM_CONFIG_TXT; then
 				if [ "${#value}" -lt 8 ]; then
-					log "WARNING: dashboard_password must be at least 8 characters"
-				elif printf '%s\n' "$value" | \
-					su -s /bin/sh www-data -c "php84 $DASHBOARD_DIR/set_password.php" >/dev/null 2>&1; then
+					warn "dashboard_password not set: it must be at least 8 characters (it has ${#value})"
+				elif out=$(printf '%s\n' "$value" | \
+					su -s /bin/sh www-data -c "php84 $DASHBOARD_DIR/set_password.php" 2>&1); then
 					log "Dashboard admin password set"
+					slot_event "config: dashboard admin password set"
 				else
-					log "WARNING: could not set the dashboard password"
+					# set_password.php reads the password from stdin and never
+					# prints it; drop its prompt from the message
+					why=$(echo "$out" | sed 's/^New dashboard admin password: *//' | tr '\n' ' ')
+					warn "could not set the dashboard password: ${why:-set_password.php failed}"
 				fi
 			fi
+			;;
+		*)
+			# A misspelled key would otherwise be ignored without a trace.
+			# Only the key is reported: the value may be a password.
+			$FROM_CONFIG_TXT && warn "unknown setting '$key' in m17-config.txt, ignored"
 			;;
 	esac
 done < "$SRC_COPY"

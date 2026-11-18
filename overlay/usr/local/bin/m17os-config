@@ -59,6 +59,17 @@ EOF
 	mv "$SAVED_CONF.tmp" "$SAVED_CONF"
 }
 
+# set_autoupdate KEY VALUE - set KEY in the automatic update settings
+AUTOUPDATE_CONF="${M17OS_STATE_DIR:-/var/lib/m17os}/autoupdate.conf"
+set_autoupdate() {
+	mkdir -p "${AUTOUPDATE_CONF%/*}"
+	touch "$AUTOUPDATE_CONF"
+	grep -v "^$1=" "$AUTOUPDATE_CONF" > "$AUTOUPDATE_CONF.tmp"
+	echo "$1=$2" >> "$AUTOUPDATE_CONF.tmp"
+	mv "$AUTOUPDATE_CONF.tmp" "$AUTOUPDATE_CONF"
+	log "Automatic updates: $1=$2"
+}
+
 # mhz_to_hz VALUE - accept 439.5 / 439.500 (MHz) or 439500000 (Hz)
 mhz_to_hz() {
 	case "$1" in
@@ -357,6 +368,16 @@ while IFS='=' read -r key value; do
 				case "$value" in
 					[A-Z]) gateway_set Reflector Module "$value" ;;
 					*) log "WARNING: module must be a single letter A-Z" ;;
+				esac
+			fi
+			;;
+		auto_update|update_hour)
+			# Persistent on /data (/var/lib/m17os), so config file only
+			if $FROM_CONFIG_TXT; then
+				case "$key:$value" in
+					auto_update:auto|auto_update:notify|auto_update:off) set_autoupdate AUTO_UPDATE "$value" ;;
+					update_hour:[0-9]|update_hour:1[0-9]|update_hour:2[0-3]) set_autoupdate UPDATE_HOUR "$value" ;;
+					*) log "WARNING: invalid $key '$value'" ;;
 				esac
 			fi
 			;;

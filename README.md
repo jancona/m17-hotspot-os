@@ -4,7 +4,7 @@ A ready-to-flash SD card image for an [M17](https://m17project.org/) hotspot: a 
 
 Download the image, write it to a card, boot, and set your callsign. No Raspberry Pi OS install and no installer script. OS updates are installed to a second root partition and roll back automatically if the new version doesn't come up healthy.
 
-> **Status: early development.** The image builds and its parts are tested in containers, but it has not yet been tested on a Raspberry Pi. The [installer script](https://github.com/M17-Project/m17-hotspot-installer) for Raspberry Pi OS remains the supported way to build a hotspot, and stays that way: this image is an alternative for people who want an appliance.
+> **Status: early development.** Tested on a Raspberry Pi Zero 2 W with an MMDVM_HS_Dual_Hat: first boot, configuration from `m17-config.txt`, upgrades in both directions, signature checks and automatic rollback. Other Pi models and the CC1200 and SX1255 HATs are untested. The [installer script](https://github.com/M17-Project/m17-hotspot-installer) for Raspberry Pi OS remains the supported way to build a hotspot, and stays that way: this image is an alternative for people who want an appliance.
 
 ## What's in it
 
@@ -53,6 +53,7 @@ doas -u www-data php84 /opt/m17/rpi-dashboard/set_password.php
 | `duplex`, `power` | `true`/`false`; transmit power in dBm |
 | `reflector`, `module` | e.g. `M17-M17`, `C` |
 | `dashboard_password` | Password for the dashboard's admin pages (8+ characters) |
+| `auto_update`, `update_hour` | `auto` (default), `notify` or `off`; the local hour (0-23, default 3) in which updates run |
 
 The full list with comments is in [`boot/m17-config.txt.sample`](boot/m17-config.txt.sample).
 
@@ -75,7 +76,22 @@ How it works:
 - `/data` holds everything that must survive an update: WiFi, SSH keys, the gateway configuration, the dashboard's settings and host files, home directories, and the `m17` password.
 - If a slot won't boot at all, put the card in a PC and change `os_prefix=slotA/` to `os_prefix=slotB/` (or the reverse) at the end of `config.txt`.
 
-The M17 software can also be updated on its own, between OS releases: `doas apk update && doas apk upgrade`. Those changes live in the running slot, so the next OS update replaces them with the versions it was built with (which are at least as new). Automatic, unattended updates of both are planned.
+### Automatic updates
+
+Every night in the update hour (03:00 local time unless `update_hour` says otherwise, plus a random delay of up to 45 minutes), `m17os-autoupdate` checks for updates:
+
+1. **A new OS release:** installed to the other slot, and the hotspot reboots into it. The health check and rollback described above guard it.
+2. **Otherwise, new M17 packages** (m17-gateway, the dashboard, firmware) from the m17-apk repository: upgraded in place, and the gateway or PHP restarted if they changed. Other Alpine packages and the kernel come only with OS releases, which are rebuilt at least monthly: a kernel upgraded with apk wouldn't match the slot's boot files.
+
+Nothing is installed during a transmission: it waits up to 30 minutes for the gateway to be idle, and otherwise tries the next night. With `auto_update=notify` it only records what is available; with `off` it does nothing. Results go to the event log that `m17os-slot-info` shows.
+
+```bash
+m17os-autoupdate --status        # policy, update hour, last result
+doas m17os-autoupdate --dry-run  # what would be updated now
+doas m17os-autoupdate --now      # update now (still waits for an idle gateway)
+```
+
+To change the settings later, edit `/var/lib/m17os/autoupdate.conf` (`AUTO_UPDATE=auto|notify|off`, `UPDATE_HOUR=0-23`) or drop a new `m17-config.txt` on the boot partition.
 
 ## Hardware notes
 

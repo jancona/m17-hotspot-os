@@ -1,0 +1,206 @@
+#!/bin/sh
+# m17os-autoupdate - unattended OS and M17 software updates
+# Part of m17-hotspot-os.
+#
+# Usage: m17os-autoupdate            run by cron every hour; acts once a day
+#                                    in the update hour
+#        m17os-autoupdate --now      check and update now (still waits for
+#                                    the gateway to be idle)
+#        m17os-autoupdate --dry-run  check now, report, change nothing
+#        m17os-autoupdate --status   show the settings and the last run
+#
+# Settings, in /var/lib/m17os/autoupdate.conf (persistent; set them with
+# auto_update= and update_hour= in m17-config.txt, or edit the file):
+#   AUTO_UPDATE=auto     install updates (the default)
+#               notify   check, record what is available, install nothing
+#               off      do nothing
+#   UPDATE_HOUR=3        local hour (0-23) in which updates run
+#
+# Each run, OS release first: if m17os-upgrade finds a newer signed
+# release, it is installed to the other slot and the hotspot reboots into
+# it (the A/B health check and rollback take it from there). Otherwise the
+# M17 packages (m17-gateway, rpi-dashboard, firmware) are upgraded from
+# the m17-apk repository. Other Alpine packages and the kernel are left to
+# OS releases: a kernel upgraded with apk would not match the slot's boot
+# files. Nothing is installed while the gateway is busy.
+
+set -u
+
+STATE_DIR="${M17OS_STATE_DIR:-/var/lib/m17os}"
+CONF="$STATE_DIR/autoupdate.conf"
+STATUS="$STATE_DIR/autoupdate.status"
+LAST_DAY="$STATE_DIR/autoupdate.day"
+LIB_DIR="${M17OS_LIB:-/usr/local/lib/m17os}"
+DASHBOARD_LOG="${M17OS_DASHBOARD_LOG:-/data/log/m17-gateway/dashboard.log}"
+OS_RELEASE="${M17OS_RELEASE:-/etc/m17os-release}"
+UPGRADE="${M17OS_UPGRADE:-/usr/local/bin/m17os-upgrade}"
+IDLE_WAIT="${M17OS_IDLE_WAIT:-1800}"   # seconds to wait for an idle gateway
+IDLE_POLL="${M17OS_IDLE_POLL:-30}"
+MAX_DELAY="${M17OS_MAX_DELAY:-2700}"   # random start delay in the hour
+M17_PACKAGES="m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 \
+m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay"
+
+# shellcheck source=../lib/m17os/bootslot.sh
+. "$LIB_DIR/bootslot.sh"
+# shellcheck source=../lib/m17os/idle.sh
+. "$LIB_DIR/idle.sh"
+
+AUTO_UPDATE=auto
+UPDATE_HOUR=3
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+case "$AUTO_UPDATE" in auto|notify|off) ;; *) AUTO_UPDATE=auto ;; esac
+case "$UPDATE_HOUR" in [0-9]|1[0-9]|2[0-3]) ;; *) UPDATE_HOUR=3 ;; esac
+
+MODE=cron
+case "${1:-}" in
+	--now) MODE=now ;;
+	--dry-run) MODE=dry ;;
+	--status)
+		echo "Policy:       $AUTO_UPDATE"
+		echo "Update hour:  $UPDATE_HOUR:00 (local time, $(cat /etc/timezone 2>/dev/null || echo UTC))"
+		if [ -f "$STATUS" ]; then
+			echo "Last run:"
+			sed 's/^\([A-Z_]*\)=/  \1: /' "$STATUS"
+		else
+			echo "Last run:     never"
+		fi
+		exit 0
+		;;
+	"") ;;
+	*) echo "Usage: m17os-autoupdate [--now | --dry-run | --status]" >&2; exit 2 ;;
+esac
+
+[ "$(id -u)" -eq 0 ] || { echo "m17os-autoupdate: must be run as root" >&2; exit 2; }
+
+say() { echo "$*"; }
+event() { slot_event "autoupdate: $*"; say "$*"; }
+# status KEY=VALUE... - record the run's results for m17-admin
+status() {
+	mkdir -p "$STATE_DIR"
+	{ echo "TIME=$(date '+%Y-%m-%d %H:%M:%S %Z')"; for kv in "$@"; do echo "$kv"; done; } > "$STATUS.tmp" &&
+		mv "$STATUS.tmp" "$STATUS"
+}
+
+if [ "$MODE" = cron ]; then
+	[ "$AUTO_UPDATE" = off ] && exit 0
+	[ "$(date +%H | sed 's/^0//')" = "$UPDATE_HOUR" ] || exit 0
+	today=$(date +%Y-%m-%d)
+	[ "$(cat "$LAST_DAY" 2>/dev/null)" = "$today" ] && exit 0
+	mkdir -p "$STATE_DIR"
+	echo "$today" > "$LAST_DAY"
+	# Spread the hotspots' requests over the hour
+	sleep $(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % (MAX_DELAY + 1) ))
+fi
+
+# The clock must be set: HTTPS checks fail with a clock far in the past
+build_date=$(sed -n 's/^Build Date:[[:space:]]*//p' "$OS_RELEASE" 2>/dev/null)
+if [ -n "$build_date" ] && [ "$(date +%Y%m%d)" -lt "$(echo "$build_date" | tr -d -)" ] 2>/dev/null; then
+	event "skipped: the clock ($(date +%Y-%m-%d)) is before this release's build date"
+	status RESULT=skipped REASON=clock
+	exit 0
+fi
+
+# wait_idle - wait up to IDLE_WAIT seconds for the gateway to be idle
+wait_idle() {
+	waited=0
+	while gateway_busy "$DASHBOARD_LOG"; do
+		if [ "$waited" -ge "$IDLE_WAIT" ]; then
+			return 1
+		fi
+		[ "$waited" -eq 0 ] && say "Gateway busy; waiting for it to be idle"
+		sleep "$IDLE_POLL"
+		waited=$((waited + IDLE_POLL))
+	done
+	return 0
+}
+
+install_mode=false
+if [ "$MODE" != dry ] && { [ "$MODE" = now ] || [ "$AUTO_UPDATE" = auto ]; }; then
+	install_mode=true
+fi
+
+# ── OS release ────────────────────────────────────────────────────────
+os_out=$("$UPGRADE" --check 2>&1)
+os_rc=$?
+os_available=""
+case $os_rc in
+	0) os_available=$(echo "$os_out" | sed -n 's/^Available:[[:space:]]*\([^ ]*\).*/\1/p') ;;
+	1) ;;
+	*) event "OS update check failed: $(echo "$os_out" | grep -m1 -i error)" ;;
+esac
+
+if [ -n "$os_available" ]; then
+	if ! $install_mode; then
+		event "OS release $os_available is available (not installed: policy $AUTO_UPDATE, mode $MODE)"
+		status RESULT=available OS_AVAILABLE="$os_available"
+		exit 0
+	fi
+	if ! wait_idle; then
+		event "OS release $os_available not installed: the gateway stayed busy"
+		status RESULT=busy OS_AVAILABLE="$os_available"
+		exit 0
+	fi
+	if "$UPGRADE" --install; then
+		event "installed OS release $os_available; rebooting"
+		status RESULT=installed OS_INSTALLED="$os_available"
+		sync
+		reboot
+		exit 0
+	fi
+	event "OS release $os_available failed to install"
+	status RESULT=failed OS_AVAILABLE="$os_available"
+	exit 1
+fi
+
+# ── M17 packages ──────────────────────────────────────────────────────
+installed=""
+for p in $M17_PACKAGES; do
+	apk info -e "$p" >/dev/null 2>&1 && installed="$installed $p"
+done
+if [ -z "$installed" ]; then
+	status RESULT=current
+	exit 0
+fi
+if ! apk update -q >/dev/null 2>&1; then
+	event "package index update failed"
+	status RESULT=failed REASON=apk-update
+	exit 1
+fi
+# "(1/2) Upgrading m17-gateway (0.9.3-r0 -> 0.9.4-r0)" -> "m17-gateway 0.9.4-r0"
+# shellcheck disable=SC2086
+pending=$(apk add -u --simulate $installed 2>/dev/null |
+	sed -n 's/^([0-9]*\/[0-9]*) Upgrading \([^ ]*\) ([^ ]* -> \([^ )]*\))$/\1 \2/p')
+if [ -z "$pending" ]; then
+	[ "$os_rc" -eq 1 ] && say "Everything is up to date"
+	status RESULT=current
+	exit 0
+fi
+summary=$(echo "$pending" | awk '{ printf "%s%s %s", (NR > 1 ? ", " : ""), $1, $2 }')
+if ! $install_mode; then
+	event "package updates available (not installed: policy $AUTO_UPDATE, mode $MODE): $summary"
+	status RESULT=available PACKAGES_AVAILABLE="$summary"
+	exit 0
+fi
+if ! wait_idle; then
+	event "package updates not installed: the gateway stayed busy"
+	status RESULT=busy PACKAGES_AVAILABLE="$summary"
+	exit 0
+fi
+# shellcheck disable=SC2086
+if ! apk add -u -q $installed; then
+	event "package updates failed to install: $summary"
+	status RESULT=failed PACKAGES_AVAILABLE="$summary"
+	exit 1
+fi
+event "updated packages: $summary"
+status RESULT=updated PACKAGES_UPDATED="$summary"
+
+# Restart what changed. The gateway was idle a moment ago.
+case " $pending " in *" m17-gateway "*)
+	rc-service m17-gateway status >/dev/null 2>&1 && rc-service m17-gateway restart >/dev/null 2>&1 && say "Restarted m17-gateway" ;;
+esac
+case " $pending " in *" rpi-dashboard "*)
+	rc-service php-fpm84 status >/dev/null 2>&1 && rc-service php-fpm84 restart >/dev/null 2>&1 && say "Restarted php-fpm84" ;;
+esac
+exit 0

@@ -31,6 +31,14 @@
 #hostname=m17-hotspot
 #timezone=America/New_York
 
+# === UPDATES ===
+# auto: install OS and M17 software updates automatically (default)
+# notify: only check, and record what is available
+# off: don't check
+#auto_update=auto
+# Local hour (0-23) in which updates run; the hotspot may reboot then
+#update_hour=3
+
 # === M17 HOTSPOT ===
 # These change /etc/m17-gateway.ini. Everything else can be set later on
 # the dashboard's Gateway page (http://m17-hotspot.local/).

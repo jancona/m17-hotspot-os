@@ -135,6 +135,130 @@ clk save
 rm -rf "$CK/data"
 clk save; [ -e "$CK/data/clock" ] && fail "save created a missing /data directory" || ok
 
+# ── idle.sh (is the gateway busy?) ───────────────────────────────────
+. "$LIB/idle.sh"
+IL="$T/dash.log"
+now=$(date -u -d '2026-11-18 14:00:00' +%s)
+busy() { if gateway_busy "$IL" "$now"; then echo busy; else echo idle; fi; }
+rm -f "$IL"
+check "no log is idle" idle "$(busy)"
+printf '%s\n' '{"time":"2026-11-18T13:50:00Z","type":"Gateway","subtype":"Start"}' > "$IL"
+check "old event is idle" idle "$(busy)"
+printf '%s\n' '{"time":"2026-11-18T13:59:30.123Z","type":"Reflector","subtype":"Connect"}' >> "$IL"
+check "event 30s ago is busy" busy "$(busy)"
+printf '%s\n' '{"time":"2026-11-18T09:58:00-04:00","type":"RF","subtype":"Voice Start","src":"N1ADJ"}' > "$IL"
+check "voice started 2 min ago (with -04:00 offset), no end" busy "$(busy)"
+printf '%s\n' '{"time":"2026-11-18T13:58:30.5Z","type":"RF","subtype":"Voice End","src":"N1ADJ"}' >> "$IL"
+check "voice ended 90s ago" idle "$(busy)"
+printf '%s\n' '{"time":"2026-11-18T13:52:00Z","type":"Internet","subtype":"Voice Start","src":"AA5RL"}' > "$IL"
+check "start 8 min ago without end (lost end)" idle "$(busy)"
+printf '%s\n' '{"time":"2026-11-18T15:57:00+01:00","type":"Internet","subtype":"Voice Start","src":"AA5RL"}' > "$IL"
+check "network voice 3 min ago (+01:00), no end" busy "$(busy)"
+
+# ── m17os-autoupdate (with stand-ins for upgrade, apk, reboot) ─────────
+AU="$T/au"
+mkdir -p "$AU/bin" "$AU/state"
+cat > "$AU/upgrade" <<EOF
+#!/bin/sh
+echo "\$*" >> "$AU/upgrade.calls"
+case "\$1" in
+	--check) if [ -f "$AU/os-available" ]; then echo "Available:  2099.1.1.1 (2099-01-01)"; exit 0; fi; exit 1 ;;
+	--install) exit 0 ;;
+esac
+EOF
+cat > "$AU/bin/reboot" <<EOF
+#!/bin/sh
+echo reboot >> "$AU/reboot.calls"
+EOF
+cat > "$AU/bin/rc-service" <<EOF
+#!/bin/sh
+echo "\$*" >> "$AU/rc.calls"
+EOF
+cat > "$AU/bin/apk" <<EOF
+#!/bin/sh
+echo "\$*" >> "$AU/apk.calls"
+case "\$*" in
+	"info -e "*) exit 0 ;;
+	"update -q") exit 0 ;;
+	"add -u --simulate "*) [ -f "$AU/pkg-available" ] && echo "(1/1) Upgrading m17-gateway (0.9.3-r0 -> 0.9.4-r0)"; exit 0 ;;
+	"add -u -q "*) exit 0 ;;
+esac
+exit 1
+EOF
+chmod +x "$AU/upgrade" "$AU/bin/"*
+printf 'm17-hotspot-os\nVersion: 2026.11.18.1\nBuild Date: 2026-01-01\n' > "$AU/release"
+au() { # au ARGS - run m17os-autoupdate in the sandbox; prints its exit code
+	rm -f "$AU"/*.calls
+	PATH="$AU/bin:$PATH" M17OS_LIB="$LIB" M17OS_STATE_DIR="$AU/state" M17OS_UPGRADE="$AU/upgrade" \
+		M17OS_RELEASE="$AU/release" M17OS_DASHBOARD_LOG="$AU/dash.log" M17OS_EVENT_LOG="$AU/events.log" \
+		M17OS_IDLE_WAIT=2 M17OS_IDLE_POLL=1 M17OS_MAX_DELAY=0 \
+		sh "$BIN/m17os-autoupdate" "$@" > "$AU/out" 2>&1
+	echo $?
+}
+calls() { cat "$AU/$1.calls" 2>/dev/null | tr '\n' ';'; }
+result() { sed -n 's/^RESULT=//p' "$AU/state/autoupdate.status"; }
+if [ "$(id -u)" -eq 0 ]; then
+	rm -f "$AU/dash.log"
+	touch "$AU/os-available"
+	check "dry run with an OS update" 0 "$(au --dry-run)"
+	check "dry run: checked only" "--check;" "$(calls upgrade)"
+	check "dry run result" available "$(result)"
+
+	check "--now installs the OS update" 0 "$(au --now)"
+	check "--now: check then install" "--check;--install;" "$(calls upgrade)"
+	check "--now reboots" "reboot;" "$(calls reboot)"
+	check "install result" installed "$(result)"
+	grep -q 'installed OS release 2099.1.1.1' "$AU/events.log" && ok || fail "install not in the event log"
+
+	printf '%s\n' "{\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"type\":\"RF\",\"subtype\":\"Voice Start\"}" > "$AU/dash.log"
+	check "busy gateway: no install" 0 "$(au --now)"
+	check "busy: check only" "--check;" "$(calls upgrade)"
+	check "busy: no reboot" "" "$(calls reboot)"
+	check "busy result" busy "$(result)"
+	rm -f "$AU/dash.log"
+
+	# Cron mode: only in the update hour, once a day
+	hour=$(date +%H | sed 's/^0//')
+	other=$(( (hour + 1) % 24 ))
+	echo "UPDATE_HOUR=$other" > "$AU/state/autoupdate.conf"
+	check "cron outside the hour" 0 "$(au)"
+	check "cron outside the hour: nothing" "" "$(calls upgrade)"
+	printf 'AUTO_UPDATE=notify\nUPDATE_HOUR=%s\n' "$hour" > "$AU/state/autoupdate.conf"
+	rm -f "$AU/state/autoupdate.day"
+	check "cron notify" 0 "$(au)"
+	check "notify: check only" "--check;" "$(calls upgrade)"
+	check "notify result" available "$(result)"
+	check "cron runs once a day" 0 "$(au)"
+	check "second run: nothing" "" "$(calls upgrade)"
+	printf 'AUTO_UPDATE=off\nUPDATE_HOUR=%s\n' "$hour" > "$AU/state/autoupdate.conf"
+	rm -f "$AU/state/autoupdate.day"
+	au >/dev/null
+	check "off: nothing" "" "$(calls upgrade)"
+	rm -f "$AU/state/autoupdate.conf"
+
+	# Packages, when there's no OS update
+	rm -f "$AU/os-available"
+	touch "$AU/pkg-available"
+	check "package update" 0 "$(au --now)"
+	case "$(calls apk)" in *"add -u -q m17-gateway"*) ok ;; *) fail "packages not upgraded: $(calls apk)" ;; esac
+	check "gateway restarted" "m17-gateway status;m17-gateway restart;" "$(calls rc)"
+	check "package result" updated "$(result)"
+	grep -q 'updated packages: m17-gateway 0.9.4-r0' "$AU/events.log" && ok || fail "package update not in the event log: $(tail -1 "$AU/events.log")"
+	au --dry-run >/dev/null
+	case "$(calls apk)" in *"add -u -q"*) fail "dry run installed packages" ;; *) ok ;; esac
+	rm -f "$AU/pkg-available"
+	check "nothing to do" 0 "$(au --now)"
+	check "nothing result" current "$(result)"
+
+	# A clock before the build date: skip
+	printf 'Build Date: 2999-01-01\n' > "$AU/release"
+	check "clock wrong" 0 "$(au --now)"
+	check "clock wrong: nothing" "" "$(calls upgrade)"
+	check "clock result" skipped "$(result)"
+else
+	echo "skip: m17os-autoupdate tests need root"
+fi
+
 # ── ini.sh ───────────────────────────────────────────────────────────
 . "$LIB/ini.sh"
 INI="$T/gw.ini"

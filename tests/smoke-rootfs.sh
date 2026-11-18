@@ -309,6 +309,29 @@ check "missing signature rejected" 2 "$(upg /tmp/keys/good.pub)"
 grep -q 'failed to fetch the manifest signature' /tmp/upg/out && ok || fail "missing signature message: $(cat /tmp/upg/out)"
 pkill -f 'httpd -p 127.0.0.1:8099' 2>/dev/null
 
+section "Automatic updates"
+[ -x /etc/periodic/hourly/m17os-autoupdate ] && ok || fail "hourly autoupdate job missing"
+printf 'auto_update=notify\nupdate_hour=4\n' > /boot/firmware/m17-config.txt
+sh /usr/local/bin/m17os-config > /tmp/au-config.log 2>&1
+check "auto_update saved" "AUTO_UPDATE=notify" "$(grep '^AUTO_UPDATE=' /var/lib/m17os/autoupdate.conf)"
+check "update_hour saved" "UPDATE_HOUR=4" "$(grep '^UPDATE_HOUR=' /var/lib/m17os/autoupdate.conf)"
+printf 'update_hour=25\n' > /boot/firmware/m17-config.txt
+sh /usr/local/bin/m17os-config > /tmp/au-config2.log 2>&1
+check "bad update_hour ignored" "UPDATE_HOUR=4" "$(grep '^UPDATE_HOUR=' /var/lib/m17os/autoupdate.conf)"
+/usr/local/bin/m17os-autoupdate --status | grep -q 'Policy:       notify' && ok || fail "--status: $(/usr/local/bin/m17os-autoupdate --status)"
+# Against the real release feed: this rootfs reports an old version, so an
+# OS release is available; a dry run records it and installs nothing
+M17OS_DASHBOARD_LOG=/nonexistent sh /usr/local/bin/m17os-autoupdate --dry-run > /tmp/au-dry.log 2>&1
+check "dry run exit" 0 "$?"
+grep -q '^RESULT=available' /var/lib/m17os/autoupdate.status && ok || fail "dry run vs GitHub: $(cat /tmp/au-dry.log)"
+grep -q 'autoupdate: OS release' /data/log/m17os-events.log && ok || fail "dry run not in the event log"
+# With no OS update: the M17 packages against the real m17-apk repository
+printf '#!/bin/sh\nexit 1\n' > /tmp/no-os-update && chmod +x /tmp/no-os-update
+M17OS_UPGRADE=/tmp/no-os-update M17OS_DASHBOARD_LOG=/nonexistent sh /usr/local/bin/m17os-autoupdate --dry-run > /tmp/au-dry2.log 2>&1
+check "package dry run exit" 0 "$?"
+grep -qE '^RESULT=(current|available)' /var/lib/m17os/autoupdate.status && ok || fail "package dry run: $(cat /tmp/au-dry2.log)"
+rm -f /var/lib/m17os/autoupdate.conf
+
 section "Gateway health hook"
 /etc/m17os/health.d/50-m17-gateway >/tmp/hook 2>&1
 check "hook fails when the gateway is not running" 1 "$?"

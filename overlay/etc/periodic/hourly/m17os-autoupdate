@@ -1,0 +1,4 @@
+#!/bin/sh
+# Unattended updates: acts once a day, in the hour set in
+# /var/lib/m17os/autoupdate.conf (see m17os-autoupdate)
+exec /usr/local/bin/m17os-autoupdate

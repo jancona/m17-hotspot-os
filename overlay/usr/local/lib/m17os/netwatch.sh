@@ -45,9 +45,19 @@ nw_have_saved() {
 	grep -q '^[[:space:]]*network[[:space:]]*=' "$NW_WPA_CONF" 2>/dev/null
 }
 
-# nw_ap_clients - number of devices connected to the access point
+# nw_ap_clients - number of devices connected to the access point: the
+# MAC addresses hostapd lists (its error messages contain ':' too)
 nw_ap_clients() {
-	hostapd_cli -p "$NW_RUN/hostapd" -i "$NW_IFACE" list_sta 2>/dev/null | grep -c ':'
+	hostapd_cli -p "$NW_RUN/hostapd" -i "$NW_IFACE" list_sta 2>/dev/null |
+		grep -ciE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
+}
+
+# nw_service ACTION NAME - start or stop one service without its
+# dependents. dhcpcd provides OpenRC's "net": stopping it the usual way
+# also stops everything that needs the network (nginx, dropbear, ntpd),
+# which would take the setup wizard down with it.
+nw_service() {
+	rc-service --nodeps "$2" "$1" >/dev/null 2>&1
 }
 
 # nw_country - the WiFi country, for the access point
@@ -111,8 +121,8 @@ EOF
 nw_ap_start() {
 	nw_scan
 	nw_write_configs
-	rc-service wpa_supplicant stop >/dev/null 2>&1
-	rc-service dhcpcd stop >/dev/null 2>&1
+	nw_service stop wpa_supplicant
+	nw_service stop dhcpcd
 	ip addr flush dev "$NW_IFACE" 2>/dev/null
 	ip link set "$NW_IFACE" up
 	ip addr add "$NW_AP_ADDR/24" dev "$NW_IFACE"
@@ -129,8 +139,11 @@ nw_ap_stop() {
 }
 
 nw_client_start() {
-	rc-service wpa_supplicant start >/dev/null 2>&1
-	rc-service dhcpcd start >/dev/null 2>&1
+	nw_service start wpa_supplicant
+	nw_service start dhcpcd
+	# Anything in the default runlevel that isn't running (stopped by an
+	# older version, or crashed while the network was away): start it
+	openrc default >/dev/null 2>&1
 }
 
 # ── The state machine ─────────────────────────────────────────────────

@@ -339,6 +339,18 @@ check "m17os-setup-ap start" "ap_start@15" "$(actions)"
 nw_scenario 0 "" 2 'echo ap > "$NW/run/mode"'
 check "restart with the AP up" "ap_stop@0 client@0" "$(actions)"
 
+# Counting phones on the access point: only hostapd's MAC lines count
+(
+	. "$LIB/netwatch.sh"
+	hostapd_cli() { printf 'Failed to connect to hostapd - wpa_ctrl_open: No such file or directory\n'; }
+	check "hostapd_cli error is no clients" 0 "$(nw_ap_clients)"
+	hostapd_cli() { printf 'Selected interface %s\n' "'wlan0'"; printf 'a4:83:e7:12:34:56\nDE:AD:BE:EF:00:01\n'; }
+	check "two phones" 2 "$(nw_ap_clients)"
+)
+# Services are switched without OpenRC's dependents
+grep -q 'rc-service --nodeps' "$LIB/netwatch.sh" && ok || fail "netwatch stops services with their dependents"
+grep -E 'rc-service (wpa_supplicant|dhcpcd) (stop|start)' "$LIB/netwatch.sh" && fail "netwatch has a plain rc-service stop/start" || ok
+
 # The access point's configuration
 (
 	NW_RUN="$NW/cfg" NW_WPA_CONF="$NW/wpa.conf"

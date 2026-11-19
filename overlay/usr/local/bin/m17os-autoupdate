@@ -95,10 +95,12 @@ if [ "$MODE" = cron ]; then
 	sleep $(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % (MAX_DELAY + 1) ))
 fi
 
-# The clock must be set: HTTPS checks fail with a clock far in the past
+# The clock must be set: HTTPS checks fail with a clock far in the past.
+# The build date is in UTC, so compare it with today in UTC: an evening
+# build in the Americas is already tomorrow there.
 build_date=$(sed -n 's/^Build Date:[[:space:]]*//p' "$OS_RELEASE" 2>/dev/null)
-if [ -n "$build_date" ] && [ "$(date +%Y%m%d)" -lt "$(echo "$build_date" | tr -d -)" ] 2>/dev/null; then
-	event "skipped: the clock ($(date +%Y-%m-%d)) is before this release's build date"
+if [ -n "$build_date" ] && [ "$(date -u +%Y%m%d)" -lt "$(echo "$build_date" | tr -d -)" ] 2>/dev/null; then
+	event "skipped: the clock ($(date -u +%Y-%m-%d) UTC) is before this release's build date ($build_date)"
 	status RESULT=skipped REASON=clock
 	exit 0
 fi

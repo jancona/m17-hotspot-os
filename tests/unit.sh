@@ -262,6 +262,10 @@ if [ "$(id -u)" -eq 0 ]; then
 	check "clock wrong" 0 "$(au --now)"
 	check "clock wrong: nothing" "" "$(calls upgrade)"
 	check "clock result" skipped "$(result)"
+	# Built today in UTC, still yesterday here: the clock is fine
+	printf 'Build Date: %s\n' "$(date -u +%Y-%m-%d)" > "$AU/release"
+	TZ=XYZ12 au --now >/dev/null
+	[ "$(result)" = skipped ] && fail "a UTC build date ahead of the local date skips updates" || ok
 else
 	echo "skip: m17os-autoupdate tests need root"
 fi

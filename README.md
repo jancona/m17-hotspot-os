@@ -29,7 +29,7 @@ Download the image, write it to a card, boot, and set your callsign. No Raspberr
 
 ### The setup access point
 
-If the hotspot has no network 90 seconds after it starts (no Ethernet, and no WiFi it can join), it starts its own open WiFi network, **M17-Setup-XXXX** (the last four characters of its WiFi MAC address). Join it with a phone or laptop: the setup wizard opens by itself (or open any web address). The wizard sets the admin password, WiFi, callsign, radio HAT (it detects CC1200 and MMDVM boards), frequency, reflector and updates. When it applies new WiFi details, the hotspot leaves M17-Setup and joins that network; if it can't within a minute, M17-Setup comes back so you can try again.
+If the hotspot has no network 90 seconds after it starts (no Ethernet, and no WiFi it can join), it starts its own open WiFi network, **M17-Setup-XXXX** (the last four characters of its WiFi MAC address). Join it with a phone or laptop: the setup wizard opens by itself (or open any web address). The wizard sets the admin password, WiFi, callsign, radio HAT (it detects CC1200 and MMDVM boards, and offers to flash newer firmware), frequency, reflector, updates and SSH access. When it applies new WiFi details, the hotspot leaves M17-Setup and joins that network; if it can't within a minute, M17-Setup comes back so you can try again.
 
 With Ethernet, open **http://m17-hotspot.local/setup/** instead. The wizard is also how to change those settings later.
 
@@ -110,7 +110,7 @@ To change the settings later, edit `/var/lib/m17os/autoupdate.conf` (`AUTO_UPDAT
 - **SX1255:** `hat=sx1255` (or `doas m17os-hat set sx1255`) enables I2S and the `genericstereoaudiocodec` overlay, then needs a reboot. Those pins (GPIO 18–21) are the CC1200 HAT's BOOT0/NRST lines, so the overlay is only enabled for the SX1255.
 - The Pi has no clock battery. The time is saved to `/data` every 15 minutes and at shutdown, and restored at boot (never moving the clock backwards); `ntpd` keeps it right once the network is up.
 - `scp` and `sftp` work (OpenSSH's `sftp-server` alongside Dropbear).
-- HAT firmware is not flashed automatically yet; `stm32flash` is installed for doing it by hand.
+- **HAT firmware:** the wizard's Firmware step compares the version the HAT reports with the files from the m17-firmware packages and offers to flash a newer one. Nothing is flashed without asking. By hand: `m17os-firmware list`, then `doas m17os-firmware flash mmdvm_hs/MMDVM_HS_Hat.bin` (for example). It stops the gateway, puts the HAT's STM32 into its bootloader through BOOT0/NRST (`Boot0Pin`/`NRSTPin` in `[Modem]`, GPIO 20 and 21 by default), writes and verifies the file with `stm32flash`, and starts the gateway again. A wrong file can't damage the board: the bootloader is in ROM, so flashing the right one fixes it.
 
 ## Building
 

@@ -6,10 +6,12 @@
 # busy at NOW (seconds since the epoch; default: now): a voice stream
 # (RF or Internet) has started and not ended, or anything was logged in the
 # last 60 seconds. A start older than 5 minutes with no end is taken to be
-# a lost end, not a 5-minute transmission.
+# a lost end, not a 5-minute transmission. A firmware flash in progress
+# (m17os-firmware through the setup wizard) counts as busy too.
 gateway_busy() {
 	log="$1"
 	now="${2:-$(date +%s)}"
+	firmware_flashing && return 0
 	[ -f "$log" ] || return 1
 	tail -n 200 "$log" | awk -v now="$now" '
 		# RFC 3339 time -> seconds since the epoch (UTC; the offset applied)
@@ -41,4 +43,12 @@ gateway_busy() {
 			exit 1
 		}
 	'
+}
+
+# firmware_flashing - the admin helper is writing firmware to the HAT
+firmware_flashing() {
+	_run="${M17OS_RUN:-/run/m17os}"
+	grep -qx 'state=running' "$_run/firmware.status" 2>/dev/null || return 1
+	_pid=$(cat "$_run/firmware.pid" 2>/dev/null)
+	[ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null
 }

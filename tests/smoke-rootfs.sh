@@ -398,6 +398,24 @@ check "helper refuses extra arguments" 2 "$?"
 as_admin "doas -n /bin/sh -c id" >/dev/null 2>&1 && fail "m17-admin can run any command through doas" || ok
 su -s /bin/sh www-data -c "doas -n $helper wifi-configured" >/dev/null 2>&1 && fail "www-data can run the admin helper" || ok
 
+section "HAT firmware (m17os-firmware)"
+# Every packaged firmware file is listed and has its description built in
+m17os-firmware list | grep -qx 'mmdvm_hs/MMDVM_HS_Dual_Hat.bin' && ok || fail "m17os-firmware list: $(m17os-firmware list)"
+m17os-firmware list | grep -qx 'cc1200/CC1200_HAT-fw.bin' && ok || fail "CC1200 firmware not listed"
+m17os-firmware list | grep -q '\.elf$' && fail "m17os-firmware lists .elf files" || ok
+for f in $(m17os-firmware list); do
+	# (busybox grep misses text next to binary bytes: split into text runs)
+	tr -c ' -~' '\n' < "/usr/share/m17-firmware/$f" | grep -q -e 'GitID' -e 'FW v' && ok || fail "$f has no description to compare"
+done
+m17os-firmware check ../../etc/shadow && fail "m17os-firmware check accepted a path outside" || ok
+# No HAT or GPIO in a container: flashing must fail cleanly, gateway untouched
+out=$(m17os-firmware flash mmdvm_hs/MMDVM_HS_Hat.bin 2>&1) && fail "flash succeeded without a HAT" || ok
+echo "$out" | grep -q -e 'serial port' -e 'GPIO chip' && ok || fail "flash without a HAT: $out"
+# Through the admin helper: refused names, status
+sh /usr/local/libexec/m17os/admin-helper firmware-flash ../x.bin >/dev/null 2>&1 && fail "helper flashed a bad name" || ok
+rm -f /run/m17os/firmware.status
+check "no flash status yet" "" "$(sh /usr/local/libexec/m17os/admin-helper firmware-status)"
+
 section "Automatic updates"
 [ -x /etc/periodic/hourly/m17os-autoupdate ] && ok || fail "hourly autoupdate job missing"
 printf 'auto_update=notify\nupdate_hour=4\n' > /boot/firmware/m17-config.txt

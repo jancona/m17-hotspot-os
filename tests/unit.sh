@@ -459,6 +459,112 @@ else
 	echo "skip: m17os-hat tests need root"
 fi
 
+# ── m17os-firmware ──────────────────────────────────────────────────
+FWD="$T/firmware"
+mkdir -p "$FWD/mmdvm_hs" "$FWD/cc1200" "$FWD/mmdvm"
+echo hs > "$FWD/mmdvm_hs/MMDVM_HS_Hat.bin"
+echo cc > "$FWD/cc1200/CC1200_HAT-fw.bin"
+echo elf > "$FWD/mmdvm/F446RE.elf"
+fwt() { M17OS_LIB="$LIB" M17OS_FIRMWARE_DIR="$FWD" sh "$BIN/m17os-firmware" "$@"; }
+check "firmware list" "cc1200/CC1200_HAT-fw.bin mmdvm_hs/MMDVM_HS_Hat.bin" "$(fwt list | tr '\n' ' ' | sed 's/ $//')"
+fwt check mmdvm_hs/MMDVM_HS_Hat.bin && ok || fail "firmware check: a listed file"
+for bad in ../etc/passwd /etc/passwd mmdvm/F446RE.elf mmdvm_hs/missing.bin 'mmdvm_hs/a b.bin' "mmdvm_hs/../cc1200/CC1200_HAT-fw.bin" ""; do
+	fwt check "$bad" && fail "firmware check accepted '$bad'" || ok
+done
+if [ "$(id -u)" -eq 0 ]; then
+	GS="$T/gpio"
+	mkdir -p "$GS/gpiochip512" "$GS/gpiochip570" "$GS/gpio532" "$GS/gpio533"
+	echo raspberrypi-exp-gpio > "$GS/gpiochip570/label"; echo 570 > "$GS/gpiochip570/base"
+	echo pinctrl-bcm2835 > "$GS/gpiochip512/label"; echo 512 > "$GS/gpiochip512/base"
+	: > "$GS/export"; : > "$GS/unexport"
+	FINI="$T/fw.ini"
+	printf '[Modem]\nType=mmdvm\nPort=/dev/null\n' > "$FINI"
+	cat > "$T/stm32flash" <<'EOS'
+#!/bin/sh
+echo "$*" > "$FW_TEST/stm32-args"
+exit "${STM32_RC:-0}"
+EOS
+	cat > "$T/rc-service" <<'EOS'
+#!/bin/sh
+echo "$2" >> "$FW_TEST/rc"
+[ "$2" = status ] && exit "${GW_STATUS:-0}"
+exit 0
+EOS
+	chmod +x "$T/stm32flash" "$T/rc-service"
+	flashit() {
+		rm -f "$T/stm32-args" "$T/rc"
+		FW_TEST="$T" M17OS_LIB="$LIB" M17OS_FIRMWARE_DIR="$FWD" M17OS_GATEWAY_INI="$FINI" \
+			M17OS_GPIO_SYSFS="$GS" M17OS_STM32FLASH="$T/stm32flash" M17OS_RC_SERVICE="$T/rc-service" \
+			sh "$BIN/m17os-firmware" flash "$@" >/dev/null 2>&1
+		echo $?
+	}
+	check "flash ok" 0 "$(flashit mmdvm_hs/MMDVM_HS_Hat.bin)"
+	check "stm32flash arguments" "-v -R -i -532&-533&532,533,:-532,-533,533 -w $FWD/mmdvm_hs/MMDVM_HS_Hat.bin /dev/null" "$(cat "$T/stm32-args")"
+	check "gateway stopped and started" "status stop start" "$(tr '\n' ' ' < "$T/rc" | sed 's/ $//')"
+	# A gateway that wasn't running stays stopped
+	check "flash, gateway stopped" 0 "$(GW_STATUS=3 flashit mmdvm_hs/MMDVM_HS_Hat.bin)"
+	check "gateway left stopped" "status" "$(tr '\n' ' ' < "$T/rc" | sed 's/ $//')"
+	# Pins from the configuration
+	printf '[Modem]\nType=cc1200\nPort=/dev/null\nBoot0Pin=5\nNRSTPin=6\n' > "$FINI"
+	flashit cc1200/CC1200_HAT-fw.bin >/dev/null
+	check "configured pins" "-v -R -i -517&-518&517,518,:-517,-518,518" "$(cut -d' ' -f1-4 < "$T/stm32-args")"
+	# A failed flash resets the HAT out of its bootloader and restarts the gateway
+	printf '[Modem]\nType=mmdvm\nPort=/dev/null\n' > "$FINI"
+	check "flash failure" 1 "$(STM32_RC=1 flashit mmdvm_hs/MMDVM_HS_Hat.bin)"
+	check "BOOT0 low after failure" 0 "$(cat "$GS/gpio532/value")"
+	check "NRST released after failure" 1 "$(cat "$GS/gpio533/value")"
+	check "gateway restarted after failure" "status stop start" "$(tr '\n' ' ' < "$T/rc" | sed 's/ $//')"
+	# Refusals
+	printf '[Modem]\nType=sx1255\nPort=/dev/null\n' > "$FINI"
+	check "no flashing for the SX1255" 1 "$(flashit mmdvm_hs/MMDVM_HS_Hat.bin)"
+	printf '[Modem]\nType=mmdvm\nPort=/dev/null\nBoot0Pin=x\n' > "$FINI"
+	check "bad pin" 1 "$(flashit mmdvm_hs/MMDVM_HS_Hat.bin)"
+	[ -f "$T/stm32-args" ] && fail "stm32flash ran with a bad pin" || ok
+	printf '[Modem]\nType=mmdvm\nPort=/dev/null\n' > "$FINI"
+	check "unknown file" 1 "$(flashit mmdvm/F446RE.elf)"
+	rm -rf "$GS/gpiochip512"
+	check "no GPIO chip" 1 "$(flashit mmdvm_hs/MMDVM_HS_Hat.bin)"
+else
+	echo "skip: m17os-firmware flash tests need root"
+fi
+
+# ── admin-helper firmware-flash / firmware-status (stand-in tool) ─────
+HR="$T/helper-run"
+mkdir -p "$HR"
+cat > "$T/fwstub" <<'EOS'
+#!/bin/sh
+case "$1" in
+	check) [ "$2" = good.bin ] || [ "$2" = bad.bin ] ;;
+	flash) printf 'Flashing %s\nWrote 10%%\rWrote 100%%\n' "$2"; sleep 1; [ "$2" = good.bin ] ;;
+esac
+EOS
+chmod +x "$T/fwstub"
+helper() { M17OS_RUN="$HR" M17OS_FIRMWARE="$T/fwstub" sh "$REPO_DIR/overlay/usr/local/libexec/m17os/admin-helper" "$@"; }
+check "no flash yet" "" "$(helper firmware-status)"
+helper firmware-flash nope.bin >/dev/null 2>&1; check "unknown firmware refused" 2 "$?"
+helper firmware-flash good.bin | grep -q '^started=[0-9]' && ok || fail "firmware-flash didn't start"
+helper firmware-status | grep -qx 'state=running' && ok || fail "flash not shown running"
+helper firmware-flash good.bin >/dev/null 2>&1; check "second flash refused" 2 "$?"
+(
+	. "$LIB/idle.sh"
+	M17OS_RUN="$HR"
+	firmware_flashing && ok || fail "a flash doesn't count as busy"
+	gateway_busy "$T/no-such-log" && ok || fail "gateway not busy while flashing"
+)
+i=0; while helper firmware-status | grep -qx 'state=running' && [ $i -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+st=$(helper firmware-status)
+echo "$st" | grep -qx 'state=ok' && ok || fail "flash not ok: $st"
+echo "$st" | grep -qx 'file=good.bin' && ok || fail "flash file: $st"
+echo "$st" | grep -qx 'log: Wrote 100%' && ok || fail "progress lines split: $st"
+( . "$LIB/idle.sh"; M17OS_RUN="$HR"; firmware_flashing && fail "finished flash still busy" || ok )
+helper firmware-flash bad.bin >/dev/null
+i=0; while helper firmware-status | grep -qx 'state=running' && [ $i -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+helper firmware-status | grep -qx 'state=failed' && ok || fail "failed flash not reported"
+# A job that died without finishing
+printf 'state=running\nfile=x.bin\nstarted=1\n' > "$HR/firmware.status"
+echo 999999 > "$HR/firmware.pid"
+helper firmware-status | grep -qx 'state=failed' && ok || fail "dead flash job shown running"
+
 PASS=$(wc -l < "$T/pass" | tr -d ' ')
 FAIL=$(wc -l < "$T/fail" | tr -d ' ')
 echo "unit: $PASS passed, $FAIL failed"

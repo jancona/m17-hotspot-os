@@ -15,6 +15,13 @@
 #   admin-helper update-policy      AUTO_UPDATE=... and UPDATE_HOUR=...
 #   admin-helper ssh-status         password_logins=true|false and keys=N
 #                                   (the m17 user's SSH keys, never shown)
+#   admin-helper firmware-flash FILE
+#                                   writes a firmware file (a name from
+#                                   m17os-firmware list) to the HAT, in the
+#                                   background; prints started=TIME
+#   admin-helper firmware-status    the last flash: state=running|ok|failed,
+#                                   file=, started=, then its output as
+#                                   "log: " lines (nothing if none ran)
 #   admin-helper gateway stop|start|status
 #   admin-helper reboot
 
@@ -26,6 +33,7 @@ CONFIG="${M17OS_CONFIG:-/usr/local/bin/m17os-config}"
 RUN="${M17OS_RUN:-/run/m17os}"
 DROPBEAR_CONF="${M17OS_DROPBEAR_CONF:-/etc/conf.d/dropbear}"
 AUTHORIZED_KEYS="${M17OS_AUTHORIZED_KEYS:-/home/m17/.ssh/authorized_keys}"
+FIRMWARE="${M17OS_FIRMWARE:-/usr/local/bin/m17os-firmware}"
 # How long the caller's web response gets before a reconnect or reboot
 DELAY="${M17OS_ACTION_DELAY:-5}"
 
@@ -115,6 +123,43 @@ case "${1:-}" in
 	update-policy)
 		[ $# -eq 1 ] || die "update-policy takes no arguments"
 		[ -f "$AUTOUPDATE_CONF" ] && grep -E '^(AUTO_UPDATE|UPDATE_HOUR)=[A-Za-z0-9]*$' "$AUTOUPDATE_CONF"
+		exit 0
+		;;
+	firmware-flash)
+		[ $# -eq 2 ] || die "usage: firmware-flash FILE"
+		"$FIRMWARE" check "$2" || die "no firmware file '$2'"
+		mkdir -p "$RUN"
+		status="$RUN/firmware.status"
+		pid=$(cat "$RUN/firmware.pid" 2>/dev/null)
+		if grep -qx 'state=running' "$status" 2>/dev/null && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			die "a flash is already running"
+		fi
+		started=$(date +%s)
+		printf 'state=running\nfile=%s\nstarted=%s\n' "$2" "$started" > "$status"
+		: > "$RUN/firmware.log"
+		# The flash runs detached, so the wizard's request returns at once;
+		# the status file says when it's finished
+		(
+			if "$FIRMWARE" flash "$2" > "$RUN/firmware.log" 2>&1; then state=ok; else state=failed; fi
+			printf 'state=%s\nfile=%s\nstarted=%s\n' "$state" "$2" "$started" > "$status.tmp"
+			mv "$status.tmp" "$status"
+		) </dev/null >/dev/null 2>&1 &
+		echo "$!" > "$RUN/firmware.pid"
+		echo "started=$started"
+		;;
+	firmware-status)
+		[ $# -eq 1 ] || die "firmware-status takes no arguments"
+		[ -f "$RUN/firmware.status" ] || exit 0
+		pid=$(cat "$RUN/firmware.pid" 2>/dev/null)
+		if grep -qx 'state=running' "$RUN/firmware.status" && ! { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }; then
+			# It stopped without saying how it ended
+			echo "state=failed"
+			grep -E '^(file|started)=' "$RUN/firmware.status"
+		else
+			grep -E '^(state|file|started)=' "$RUN/firmware.status"
+		fi
+		# stm32flash rewrites its progress line with carriage returns
+		tr '\r' '\n' < "$RUN/firmware.log" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 20 | sed 's/^/log: /'
 		exit 0
 		;;
 	gateway)

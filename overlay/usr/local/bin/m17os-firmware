@@ -1,0 +1,164 @@
+#!/bin/sh
+# m17os-firmware - write firmware to the radio HAT's microcontroller
+# Part of m17-hotspot-os.
+#
+# Usage: m17os-firmware list           the firmware files this system has
+#        m17os-firmware check FILE     exit 0 if FILE is one of them
+#        m17os-firmware flash FILE     write FILE to the HAT (as root)
+#
+# FILE is a name from "list", such as mmdvm_hs/MMDVM_HS_Hat.bin; the files
+# come from the m17-firmware-* packages.
+#
+# The HAT's STM32 is put into its bootloader through two GPIO pins: BOOT0
+# held high while NRST is released. stm32flash then writes and verifies
+# the file over the serial port and resets the HAT into the new firmware.
+# The port and the pins come from [Modem] in the gateway's configuration
+# (Port, Boot0Pin, NRSTPin; GPIO 20 and 21 on the CC1200 and MMDVM HATs).
+# stm32flash uses the kernel's sysfs GPIO numbers: the Pi's pin number plus
+# the base of its GPIO chip (512 on current kernels; not the same on a
+# Pi 5).
+#
+# m17-gateway holds the serial port, so it is stopped while flashing and
+# started again afterwards if it was running.
+#
+# The STM32's bootloader is in ROM, so a wrong or interrupted flash can't
+# make the board unrecoverable: flash the right file again.
+
+PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+LIB_DIR="${M17OS_LIB:-/usr/local/lib/m17os}"
+FIRMWARE_DIR="${M17OS_FIRMWARE_DIR:-/usr/share/m17-firmware}"
+GATEWAY_INI="${M17OS_GATEWAY_INI:-/etc/m17-gateway.ini}"
+GPIO_SYSFS="${M17OS_GPIO_SYSFS:-/sys/class/gpio}"
+STM32FLASH="${M17OS_STM32FLASH:-stm32flash}"
+RC_SERVICE="${M17OS_RC_SERVICE:-rc-service}"
+
+# shellcheck source=../lib/m17os/ini.sh
+. "$LIB_DIR/ini.sh"
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+# list - the firmware files, as names relative to FIRMWARE_DIR
+list() {
+	[ -d "$FIRMWARE_DIR" ] || return 0
+	(cd "$FIRMWARE_DIR" && find . -type f -name '*.bin' | sed 's|^\./||' | sort)
+}
+
+# check NAME - NAME is a firmware file: a plain relative name, no "..",
+# that exists
+check() {
+	case "$1" in
+		"" | /* | *..* | *[!A-Za-z0-9._/-]*) return 1 ;;
+		*.bin) ;;
+		*) return 1 ;;
+	esac
+	[ -f "$FIRMWARE_DIR/$1" ]
+}
+
+# gpio_base - the sysfs number of the Pi's GPIO 0: the base of the chip
+# that drives the 40-pin header (bcm2835 on the Zero 2 W and Pi 3,
+# bcm2711 on the Pi 4, rp1 on the Pi 5)
+gpio_base() {
+	for chip in "$GPIO_SYSFS"/gpiochip*; do
+		[ -f "$chip/label" ] || continue
+		case "$(cat "$chip/label")" in
+			pinctrl-bcm2835 | pinctrl-bcm2711 | pinctrl-rp1)
+				cat "$chip/base"
+				return 0
+				;;
+		esac
+	done
+	return 1
+}
+
+# pin KEY DEFAULT - a GPIO pin number from [Modem]
+pin() {
+	v=$(ini_get "$GATEWAY_INI" Modem "$1" 2>/dev/null)
+	case "$v" in
+		"" ) echo "$2" ;;
+		*[!0-9]*) die "[Modem] $1 is not a GPIO number: $v" ;;
+		*) echo "$v" ;;
+	esac
+}
+
+# gpio_write N VALUE - drive sysfs GPIO N
+gpio_write() {
+	[ -d "$GPIO_SYSFS/gpio$1" ] || echo "$1" > "$GPIO_SYSFS/export" 2>/dev/null
+	echo out > "$GPIO_SYSFS/gpio$1/direction" 2>/dev/null
+	echo "$2" > "$GPIO_SYSFS/gpio$1/value" 2>/dev/null
+}
+
+# reset_to_firmware BOOT0 NRST - after a failure, leave the bootloader:
+# BOOT0 low, then a pulse on NRST
+reset_to_firmware() {
+	gpio_write "$1" 0
+	gpio_write "$2" 0
+	sleep 1
+	gpio_write "$2" 1
+	for n in "$1" "$2"; do
+		echo "$n" > "$GPIO_SYSFS/unexport" 2>/dev/null
+	done
+}
+
+flash() {
+	check "$1" || die "no firmware file '$1' (see: m17os-firmware list)"
+	[ "$(id -u)" -eq 0 ] || die "must be run as root"
+	[ -f "$GATEWAY_INI" ] || die "$GATEWAY_INI not found"
+	case "$(ini_get "$GATEWAY_INI" Modem Type | tr '[:upper:]' '[:lower:]')" in
+		sx1255) die "the SX1255 HAT has no firmware to flash" ;;
+	esac
+	port=$(ini_get "$GATEWAY_INI" Modem Port)
+	port="${port:-/dev/ttyAMA0}"
+	[ -c "$port" ] || die "serial port $port not found"
+	base=$(gpio_base) || die "the Pi's GPIO chip isn't in $GPIO_SYSFS"
+	boot0=$(pin Boot0Pin 20) || exit 1
+	nrst=$(pin NRSTPin 21) || exit 1
+	boot0=$((boot0 + base))
+	nrst=$((nrst + base))
+
+	running=false
+	if "$RC_SERVICE" m17-gateway status >/dev/null 2>&1; then
+		running=true
+		echo "Stopping m17-gateway"
+		"$RC_SERVICE" m17-gateway stop >/dev/null 2>&1
+	fi
+
+	echo "Flashing $1 to the HAT on $port"
+	# Enter: BOOT0 and NRST low, BOOT0 high, release NRST.
+	# Exit (-R): BOOT0 low, NRST low, release NRST.
+	"$STM32FLASH" -v -R -i "-$boot0&-$nrst&$boot0,$nrst,:-$boot0,-$nrst,$nrst" \
+		-w "$FIRMWARE_DIR/$1" "$port"
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		echo "stm32flash failed (exit $rc); resetting the HAT"
+		reset_to_firmware "$boot0" "$nrst"
+	fi
+
+	if $running; then
+		echo "Starting m17-gateway"
+		"$RC_SERVICE" m17-gateway start >/dev/null 2>&1
+	fi
+	if [ "$rc" -eq 0 ]; then
+		echo "Done: $1 written and verified"
+	fi
+	return "$rc"
+}
+
+case "${1:-}" in
+	list)
+		[ $# -eq 1 ] || die "list takes no arguments"
+		list
+		;;
+	check)
+		[ $# -eq 2 ] || die "usage: m17os-firmware check FILE"
+		check "$2"
+		;;
+	flash)
+		[ $# -eq 2 ] || die "usage: m17os-firmware flash FILE"
+		flash "$2"
+		;;
+	*)
+		echo "Usage: m17os-firmware list | check FILE | flash FILE" >&2
+		exit 1
+		;;
+esac

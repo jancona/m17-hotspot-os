@@ -4,7 +4,7 @@ A ready-to-flash SD card image for an [M17](https://m17project.org/) hotspot: a 
 
 Download the image, write it to a card, boot, and set your callsign. No Raspberry Pi OS install and no installer script. OS updates are installed to a second root partition and roll back automatically if the new version doesn't come up healthy.
 
-> **Status: early development.** Tested on a Raspberry Pi Zero 2 W with an MMDVM_HS_Dual_Hat: first boot, configuration from `m17-config.txt`, upgrades in both directions, signature checks and automatic rollback. Other Pi models and the CC1200 and SX1255 HATs are untested. The [installer script](https://github.com/M17-Project/m17-hotspot-installer) for Raspberry Pi OS remains the supported way to build a hotspot, and stays that way: this image is an alternative for people who want an appliance.
+> **Status: early development.** Tested on a Raspberry Pi Zero 2 W with an MMDVM_HS_Dual_Hat: first boot, configuration from `m17-config.txt`, the setup wizard over the setup access point from a phone and over the LAN, upgrades in both directions, signature checks, automatic rollback and automatic updates. Other Pi models and the CC1200 and SX1255 HATs are untested. The [installer script](https://github.com/M17-Project/m17-hotspot-installer) for Raspberry Pi OS remains the supported way to build a hotspot, and stays that way: this image is an alternative for people who want an appliance.
 
 ## What's in it
 
@@ -12,7 +12,7 @@ Download the image, write it to a card, boot, and set your callsign. No Raspberr
 |---|---|
 | **Base** | Alpine Linux userland with the Raspberry Pi OS kernel and firmware, from [RasPINE](https://github.com/MW0MWZ/RasPINE) |
 | **Hardware** | Raspberry Pi Zero 2 W, 3, 4, 5 (64-bit only) |
-| **M17** | m17-gateway, rpi-dashboard (nginx + PHP-FPM), HAT firmware (CC1200, MMDVM_HS, MMDVM) and the SX1255 I2S codec overlay, from the [m17-apk](https://github.com/jancona/m17-apk) package repository; stm32flash |
+| **M17** | m17-gateway, rpi-dashboard (nginx + PHP-FPM), the [m17-admin](https://github.com/jancona/m17-admin) setup wizard, HAT firmware (CC1200, MMDVM_HS, MMDVM) and the SX1255 I2S codec overlay, from the [m17-apk](https://github.com/jancona/m17-apk) package repository; stm32flash |
 | **Updates** | A/B root partitions with boot watchdog, health check and automatic rollback, based on [Pi-Star OS](https://github.com/MW0MWZ/Pi-Star_OS) |
 | **Footprint** | Logs in RAM to spare the SD card, except the dashboard's activity log (one line per event), which is kept on `/data` so recent activity survives reboots; settings on a separate `/data` partition |
 
@@ -20,11 +20,14 @@ Download the image, write it to a card, boot, and set your callsign. No Raspberr
 
 1. Download `m17-hotspot-os-<version>.img.xz` from [Releases](../../releases/latest).
 2. Write it to an SD card (4 GB or larger) with Raspberry Pi Imager ("Use custom") or balenaEtcher. Both take the `.img.xz` as is.
-3. **Optional, recommended:** before ejecting the card, open the `BOOT` partition, copy `m17-config.txt.sample` to `m17-config.txt` and fill in your WiFi, callsign and HAT. See [Boot configuration](#boot-configuration).
+3. **Optional:** to set it up without a phone, open the `BOOT` partition before ejecting the card, copy `m17-config.txt.sample` to `m17-config.txt` and fill in your WiFi, callsign and HAT. See [Boot configuration](#boot-configuration).
 4. Put the card in the Pi and power it on. The first boot expands the data partition and reboots once (twice for an SX1255 HAT), so give it two or three minutes.
-5. Open **http://m17-hotspot.local/** (or the Pi's IP address). If you didn't use `m17-config.txt`, set the callsign and the rest on the dashboard's **Gateway** page. That page needs the dashboard password, which you set with `dashboard_password` in `m17-config.txt` or over SSH (below).
+5. Set it up with the wizard:
+   - **No network yet** (WiFi only, no `m17-config.txt`): join the hotspot's own WiFi network, **M17-Setup-XXXX**, with a phone. The wizard opens by itself. See below.
+   - **Ethernet, or WiFi from `m17-config.txt`:** open **http://m17-hotspot.local/setup/** (or the Pi's IP address).
+6. When the wizard finishes, the dashboard is at **http://m17-hotspot.local/**. Its **Setup** link in the sidebar brings you back to the wizard to change settings.
 
-### Setup without m17-config.txt
+### The setup access point
 
 If the hotspot has no network 90 seconds after it starts (no Ethernet, and no WiFi it can join), it starts its own open WiFi network, **M17-Setup-XXXX** (the last four characters of its WiFi MAC address). Join it with a phone or laptop: the setup wizard opens by itself (or open any web address). The wizard sets the admin password, WiFi, callsign, radio HAT (it detects CC1200 and MMDVM boards), frequency, reflector and updates. When it applies new WiFi details, the hotspot leaves M17-Setup and joins that network; if it can't within a minute, M17-Setup comes back so you can try again.
 
@@ -36,7 +39,7 @@ The same access point starts if a working network is lost for 5 minutes. While i
 
 The user is `m17` with password `m17hotspot`. **Change it** with `user_password` in `m17-config.txt` or with `passwd`. SSH accepts keys only (add one with `ssh_key`), unless `enable_ssh_password=true` is set. `root` is locked; use `doas` (or `sudo`, which maps to it).
 
-Set the dashboard password over SSH with:
+The wizard's admin password is also the password for the dashboard's Gateway and Settings pages. You can set it with `dashboard_password` in `m17-config.txt` too, or over SSH:
 
 ```bash
 doas -u www-data php84 /opt/m17/rpi-dashboard/set_password.php
@@ -63,7 +66,7 @@ doas -u www-data php84 /opt/m17/rpi-dashboard/set_password.php
 
 The full list with comments is in [`boot/m17-config.txt.sample`](boot/m17-config.txt.sample).
 
-The setup wizard ([m17-admin](https://github.com/jancona/m17-admin), in development) applies the same keys, through `m17os-config --apply` (settings on stdin, a `warning:`/`reboot:`/`network:`/`gateway:` result on stdout). It runs as its own user and reaches root only through `/usr/local/libexec/m17os/admin-helper`, which accepts a fixed set of commands. `reflector=none` means no reflector (RF only).
+The setup wizard ([m17-admin](https://github.com/jancona/m17-admin)) applies the same keys, through `m17os-config --apply` (settings on stdin, a `warning:`/`reboot:`/`network:`/`gateway:` result on stdout). It runs as its own user and reaches root only through `/usr/local/libexec/m17os/admin-helper`, which accepts a fixed set of commands. `reflector=none` means no reflector (RF only).
 
 The gateway settings go into `/etc/m17-gateway.ini`, the file the dashboard's Gateway page edits; everything else there can be changed on that page.
 

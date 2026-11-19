@@ -364,6 +364,24 @@ out=$(printf 'module=d\n' | as_admin "doas -n $helper apply" 2>&1); rc=$?
 check "helper apply exit" 0 "$rc"
 case "$out" in *"gateway: true"*) ok ;; *) fail "helper apply: $out" ;; esac
 check "helper apply: module" "D" "$(ini_get /etc/m17-gateway.ini Reflector Module)"
+# SSH: status, a key added once, password logins switched with a restart
+# (earlier sections added a key and allowed passwords: start from keys only)
+printf 'enable_ssh_password=false\n' | as_admin "doas -n $helper apply" >/dev/null 2>&1
+keys=$(grep -cE '^(ssh-|ecdsa-|sk-)' /home/m17/.ssh/authorized_keys 2>/dev/null || true)
+out=$(as_admin "doas -n $helper ssh-status" 2>&1)
+check "helper: ssh status" "password_logins=false keys=$keys" "$(echo $out)"
+key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGb0Xv3mQ0x0aP1l2n3o4p5q6r7s8t9u0v1w2x3y4z5A test@smoke"
+for i in 1 2; do printf 'ssh_key=%s\n' "$key" | as_admin "doas -n $helper apply" >/dev/null 2>&1; done
+check "ssh key added once" 1 "$(grep -cxF "$key" /home/m17/.ssh/authorized_keys)"
+check "authorized_keys owner and mode" "m17:600" "$(stat -c %U:%a /home/m17/.ssh/authorized_keys)"
+out=$(printf 'enable_ssh_password=true\n' | M17OS_ACTION_DELAY=0 as_admin "doas -n $helper apply" 2>&1)
+case "$out" in *"ssh: true"*) ok ;; *) fail "enabling password logins: $out" ;; esac
+out=$(as_admin "doas -n $helper ssh-status" 2>&1)
+check "helper: ssh status after" "password_logins=true keys=$((keys + 1))" "$(echo $out)"
+out=$(printf 'enable_ssh_password=true\n' | as_admin "doas -n $helper apply" 2>&1)
+case "$out" in *"ssh: false"*) ok ;; *) fail "unchanged password logins reported as a change: $out" ;; esac
+printf 'enable_ssh_password=false\n' | as_admin "doas -n $helper apply" >/dev/null 2>&1
+grep -q '^DROPBEAR_OPTS=.*-s' /etc/conf.d/dropbear && ok || fail "password logins not switched off again"
 as_admin "doas -n $helper gateway restart" >/dev/null 2>&1
 check "helper refuses gateway restart" 2 "$?"
 as_admin "doas -n $helper rm -rf /" >/dev/null 2>&1
@@ -441,6 +459,12 @@ out=$(printf 'callsign=N0CALL\n' | M17OS_ACTION_DELAY=0 sh /usr/local/libexec/m1
 sleep 1
 case "$out" in *"network: true"*) ok ;; *) fail "apply on the AP without WiFi changes: $out" ;; esac
 [ -f /run/m17os/request-join ] && ok || fail "apply on the AP without WiFi changes didn't ask to join"
+rm -f /run/m17os/request-join
+# ...but not the admin password alone (the wizard's first step)
+echo ap > /run/m17os/mode
+printf 'dashboard_password=smoke-test-pass\n' | M17OS_ACTION_DELAY=0 sh /usr/local/libexec/m17os/admin-helper apply >/dev/null
+sleep 1
+[ -f /run/m17os/request-join ] && fail "setting the admin password on the AP made it leave the AP" || ok
 rm -f /run/m17os/request-join /run/m17os/mode
 out=$(printf 'callsign=N0CALL\n' | M17OS_ACTION_DELAY=0 sh /usr/local/libexec/m17os/admin-helper apply)
 case "$out" in *"network: false"*) ok ;; *) fail "apply off the AP without WiFi changes: $out" ;; esac

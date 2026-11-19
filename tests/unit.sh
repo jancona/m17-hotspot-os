@@ -119,7 +119,7 @@ case "\$*" in
 esac
 EOF
 chmod +x "$CK/bin/date"
-clk() { PATH="$CK/bin:$PATH" M17OS_CLOCK_FILE="$CK/data/clock" sh "$REPO_DIR/overlay/usr/local/libexec/m17os/clock" "$@" >/dev/null; }
+clk() { PATH="$CK/bin:$PATH" M17OS_CLOCK_FILE="$CK/data/clock" M17OS_BUILD_STAMP="$CK/built" sh "$REPO_DIR/overlay/usr/local/libexec/m17os/clock" "$@" >/dev/null; }
 : > "$CK/set"
 echo 2000000000 > "$CK/now"
 clk restore; check "restore without a saved time" "" "$(cat "$CK/set")"
@@ -132,6 +132,15 @@ echo 1000000000 > "$CK/now"
 touch -d @900000000 "$CK/data/clock"
 clk save
 [ "$(stat -c %Y "$CK/data/clock")" -gt 900000000 ] && ok || fail "save did not update an older saved time"
+# A new card: no saved time, but the build time is a floor
+rm -f "$CK/data/clock"; : > "$CK/set"
+echo 1000000000 > "$CK/now"
+touch -d @1800000000 "$CK/built"
+clk restore; check "new card: clock set to the build time" "@1800000000" "$(cat "$CK/set")"
+: > "$CK/set"
+touch -d @1850000000 "$CK/data/clock"
+clk restore; check "a saved time later than the build wins" "@1850000000" "$(cat "$CK/set")"
+rm -f "$CK/built"
 rm -rf "$CK/data"
 clk save; [ -e "$CK/data/clock" ] && fail "save created a missing /data directory" || ok
 

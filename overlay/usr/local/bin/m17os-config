@@ -24,6 +24,7 @@
 #     reboot: true|false      a config.txt change needs a reboot
 #     network: true|false     the WiFi settings changed
 #     gateway: true|false     the gateway's configuration changed
+#     ssh: true|false         SSH password logins were switched on or off
 #   and exits 0, or 1 if it couldn't run at all.
 
 FW_DIR="${M17OS_FW_DIR:-/boot/firmware}"
@@ -218,6 +219,7 @@ MODEM_SPEED=""
 SAVE_HOSTNAME=$(cat /etc/hostname 2>/dev/null)
 SAVE_TIMEZONE=$(cat /etc/timezone 2>/dev/null)
 SAVE_SSH_PASSWORD=$(sed -n 's/^enable_ssh_password=//p' "$SAVED_CONF" 2>/dev/null)
+DROPBEAR_OPTS_BEFORE=$(grep '^DROPBEAR_OPTS=' /etc/conf.d/dropbear 2>/dev/null)
 
 # Read from a copy without CRs: the file is often written on Windows
 SRC_COPY=$(mktemp)
@@ -287,10 +289,14 @@ while IFS='=' read -r key value; do
 			;;
 		ssh_key)
 			if $FROM_CONFIG_TXT; then
-				log "Adding SSH public key"
 				home="/home/$USER_NAME"
 				mkdir -p "$home/.ssh"
-				echo "$value" >> "$home/.ssh/authorized_keys"
+				if grep -qxF "$value" "$home/.ssh/authorized_keys" 2>/dev/null; then
+					log "SSH public key already present"
+				else
+					log "Adding SSH public key"
+					echo "$value" >> "$home/.ssh/authorized_keys"
+				fi
 				chmod 700 "$home/.ssh"
 				chmod 600 "$home/.ssh/authorized_keys"
 				chown -R "$USER_NAME:$USER_NAME" "$home/.ssh"
@@ -494,6 +500,12 @@ if $APPLY; then
 	echo "reboot: $REBOOT"
 	if [ "$WIFI_COUNT" -gt 0 ]; then echo "network: true"; else echo "network: false"; fi
 	echo "gateway: $GATEWAY_CHANGED"
+	# dropbear rereads its options only when restarted
+	if [ "$(grep '^DROPBEAR_OPTS=' /etc/conf.d/dropbear 2>/dev/null)" != "$DROPBEAR_OPTS_BEFORE" ]; then
+		echo "ssh: true"
+	else
+		echo "ssh: false"
+	fi
 	exit 0
 elif $FROM_CONFIG_TXT; then
 	save_conf

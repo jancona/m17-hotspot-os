@@ -13,6 +13,8 @@
 #   admin-helper wifi-configured    the saved WiFi settings, never passwords:
 #                                   country=XX and ssid=NAME lines
 #   admin-helper update-policy      AUTO_UPDATE=... and UPDATE_HOUR=...
+#   admin-helper ssh-status         password_logins=true|false and keys=N
+#                                   (the m17 user's SSH keys, never shown)
 #   admin-helper gateway stop|start|status
 #   admin-helper reboot
 
@@ -22,6 +24,8 @@ AUTOUPDATE_CONF="${M17OS_STATE_DIR:-/var/lib/m17os}/autoupdate.conf"
 IFACE="${M17OS_WIFI_IFACE:-wlan0}"
 CONFIG="${M17OS_CONFIG:-/usr/local/bin/m17os-config}"
 RUN="${M17OS_RUN:-/run/m17os}"
+DROPBEAR_CONF="${M17OS_DROPBEAR_CONF:-/etc/conf.d/dropbear}"
+AUTHORIZED_KEYS="${M17OS_AUTHORIZED_KEYS:-/home/m17/.ssh/authorized_keys}"
 # How long the caller's web response gets before a reconnect or reboot
 DELAY="${M17OS_ACTION_DELAY:-5}"
 
@@ -36,12 +40,15 @@ later() {
 case "${1:-}" in
 	apply)
 		[ $# -eq 1 ] || die "apply takes no arguments"
-		out=$("$CONFIG" --apply) || die "m17os-config --apply failed"
+		input=$(cat)
+		out=$(printf '%s\n' "$input" | "$CONFIG" --apply) || die "m17os-config --apply failed"
 		ap=false
 		[ "$(cat "$RUN/mode" 2>/dev/null)" = ap ] && ap=true
-		if $ap; then
-			# Applying settings from the setup access point means setup is
-			# done: join the WiFi even if its settings didn't change
+		# Applying the wizard's settings from the setup access point means
+		# setup is done: join the WiFi even if its settings didn't change.
+		# Not for the admin password alone, which the wizard sets at its
+		# first step, long before the WiFi is known.
+		if $ap && printf '%s\n' "$input" | grep -v '^[[:space:]]*$' | grep -qv '^dashboard_password='; then
 			out=$(echo "$out" | sed 's/^network: false$/network: true/')
 		fi
 		echo "$out"
@@ -55,6 +62,12 @@ case "${1:-}" in
 			# Restart only a gateway that's meant to run
 			rc-update show default 2>/dev/null | grep -q '^ *m17-gateway ' &&
 				rc-service m17-gateway restart >/dev/null 2>&1
+			;;
+		esac
+		case "$out" in *"ssh: true"*)
+			# Password logins switched on or off. Sessions already open
+			# stay: dropbear runs one process per connection.
+			later rc-service dropbear restart
 			;;
 		esac
 		case "$out" in *"network: true"*)
@@ -77,6 +90,15 @@ case "${1:-}" in
 		# bssid freq signal flags ssid -> signal freq flags ssid
 		wpa_cli -i "$IFACE" scan_results 2>/dev/null |
 			awk -F '\t' 'NR > 1 && NF >= 5 { print $3 "\t" $2 "\t" $4 "\t" $5 }'
+		;;
+	ssh-status)
+		[ $# -eq 1 ] || die "ssh-status takes no arguments"
+		if grep -q '^DROPBEAR_OPTS=.*-s' "$DROPBEAR_CONF" 2>/dev/null; then
+			echo "password_logins=false"
+		else
+			echo "password_logins=true"
+		fi
+		echo "keys=$(grep -cE '^(ssh-|ecdsa-|sk-)' "$AUTHORIZED_KEYS" 2>/dev/null || true)"
 		;;
 	wifi-configured)
 		[ $# -eq 1 ] || die "wifi-configured takes no arguments"

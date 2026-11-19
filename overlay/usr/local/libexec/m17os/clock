@@ -2,7 +2,8 @@
 # clock - keep a rough time across reboots on a Pi without a clock battery
 # Part of m17-hotspot-os.
 #
-#   clock restore   set the clock from the saved time, if that is later
+#   clock restore   set the clock from the saved time (or, on a new card,
+#                   the time this system was built), if that is later
 #   clock save      record the current time
 #
 # The time is the modification time of a file on /data, so it survives OS
@@ -11,11 +12,19 @@
 # 15 minutes behind, until NTP corrects it.
 
 STAMP="${M17OS_CLOCK_FILE:-/data/m17os/clock}"
+# Written when the image was built: a floor for a card that has never
+# saved a time (otherwise its first boot starts at the kernel's date)
+BUILT="${M17OS_BUILD_STAMP:-/etc/m17os-release}"
 
 case "$1" in
 	restore)
-		[ -f "$STAMP" ] || exit 0
-		saved=$(stat -c %Y "$STAMP") || exit 1
+		saved=0
+		for f in "$STAMP" "$BUILT"; do
+			[ -f "$f" ] || continue
+			t=$(stat -c %Y "$f") || continue
+			[ "$t" -gt "$saved" ] && saved=$t
+		done
+		[ "$saved" -gt 0 ] || exit 0
 		now=$(date +%s)
 		# Never move the clock backwards: NTP or an RTC may already have
 		# set it, and the saved time is only a lower bound

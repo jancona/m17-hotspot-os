@@ -207,13 +207,15 @@ event "updated packages: $summary"
 status RESULT=updated PACKAGES_UPDATED="$summary"
 
 # Restart what changed. The gateway was idle a moment ago.
-case " $pending " in *" m17-gateway "*)
+# $pending has one "name version" per line; match on the names alone
+updated=" $(echo "$pending" | awk '{ print $1 }' | tr '\n' ' ')"
+case "$updated" in *" m17-gateway "*)
 	rc-service m17-gateway status >/dev/null 2>&1 && rc-service m17-gateway restart >/dev/null 2>&1 && say "Restarted m17-gateway" ;;
 esac
-case " $pending " in *" m17-admin "*)
+case "$updated" in *" m17-admin "*)
 	rc-service m17-admin status >/dev/null 2>&1 && rc-service m17-admin restart >/dev/null 2>&1 && say "Restarted m17-admin" ;;
 esac
-case " $pending " in *" rpi-dashboard "*)
+case "$updated" in *" rpi-dashboard "*)
 	rc-service php-fpm84 status >/dev/null 2>&1 && rc-service php-fpm84 restart >/dev/null 2>&1 && say "Restarted php-fpm84" ;;
 esac
 exit 0

@@ -253,7 +253,11 @@ if [ "$(id -u)" -eq 0 ]; then
 	touch "$AU/admin-available"
 	au --now >/dev/null
 	check "m17-admin restarted after its update" "m17-admin status;m17-admin restart;" "$(calls rc)"
-	rm -f "$AU/admin-available"
+	# Several at once (one per line from apk): each one restarted
+	touch "$AU/pkg-available"
+	au --now >/dev/null
+	check "gateway and m17-admin both restarted" "m17-gateway status;m17-gateway restart;m17-admin status;m17-admin restart;" "$(calls rc)"
+	rm -f "$AU/admin-available" "$AU/pkg-available"
 	check "nothing to do" 0 "$(au --now)"
 	check "nothing result" current "$(result)"
 

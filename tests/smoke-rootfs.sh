@@ -382,6 +382,13 @@ out=$(printf 'enable_ssh_password=true\n' | as_admin "doas -n $helper apply" 2>&
 case "$out" in *"ssh: false"*) ok ;; *) fail "unchanged password logins reported as a change: $out" ;; esac
 printf 'enable_ssh_password=false\n' | as_admin "doas -n $helper apply" >/dev/null 2>&1
 grep -q '^DROPBEAR_OPTS=.*-s' /etc/conf.d/dropbear && ok || fail "password logins not switched off again"
+# A new hostname is reported, so the helper restarts avahi (mDNS)
+old_host=$(cat /etc/hostname)
+out=$(printf 'hostname=smoke-renamed\n' | M17OS_ACTION_DELAY=0 as_admin "doas -n $helper apply" 2>&1)
+case "$out" in *"hostname: true"*) ok ;; *) fail "hostname change not reported: $out" ;; esac
+out=$(printf 'hostname=smoke-renamed\n' | as_admin "doas -n $helper apply" 2>&1)
+case "$out" in *"hostname: false"*) ok ;; *) fail "unchanged hostname reported as a change: $out" ;; esac
+printf 'hostname=%s\n' "$old_host" | as_admin "doas -n $helper apply" >/dev/null 2>&1
 as_admin "doas -n $helper gateway restart" >/dev/null 2>&1
 check "helper refuses gateway restart" 2 "$?"
 as_admin "doas -n $helper rm -rf /" >/dev/null 2>&1

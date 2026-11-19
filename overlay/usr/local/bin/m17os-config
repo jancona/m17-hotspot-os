@@ -25,6 +25,7 @@
 #     network: true|false     the WiFi settings changed
 #     gateway: true|false     the gateway's configuration changed
 #     ssh: true|false         SSH password logins were switched on or off
+#     hostname: true|false    the hostname changed
 #   and exits 0, or 1 if it couldn't run at all.
 
 FW_DIR="${M17OS_FW_DIR:-/boot/firmware}"
@@ -213,6 +214,7 @@ fi
 WIFI_COUNT=0
 REBOOT=false
 GATEWAY_CHANGED=false
+HOSTNAME_CHANGED=false
 MODEM_SPEED=""
 # What user.conf will hold: start from the current values, so settings
 # that aren't in this file (or from the wizard) keep theirs
@@ -312,6 +314,7 @@ while IFS='=' read -r key value; do
 				echo "$value" > /etc/hostname
 				hostname "$value"
 				sed -i "s/^127\.0\.1\.1.*/127.0.1.1   $value/" /etc/hosts
+				HOSTNAME_CHANGED=true
 			fi
 			;;
 		timezone)
@@ -506,6 +509,7 @@ if $APPLY; then
 	else
 		echo "ssh: false"
 	fi
+	echo "hostname: $HOSTNAME_CHANGED"
 	exit 0
 elif $FROM_CONFIG_TXT; then
 	save_conf

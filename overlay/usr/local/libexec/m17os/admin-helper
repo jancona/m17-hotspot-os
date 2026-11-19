@@ -70,6 +70,12 @@ case "${1:-}" in
 			later rc-service dropbear restart
 			;;
 		esac
+		case "$out" in *"hostname: true"*)
+			# avahi keeps answering for the name it started with, so the
+			# new name.local wouldn't work until the next reboot
+			later rc-service avahi-daemon restart
+			;;
+		esac
 		case "$out" in *"network: true"*)
 			if $ap; then
 				# The setup access point is up: m17os-netwatch leaves it

@@ -10,6 +10,11 @@ on:
     - cron: '0 3 * * 1'
   # A manual run always builds and releases
   workflow_dispatch:
+    inputs:
+      rollback_test:
+        description: "Rollback test: a pre-release that always fails its health check (never marked latest, so no hotspot installs it by itself)"
+        type: boolean
+        default: false
 
 concurrency:
   group: build-${{ github.ref }}
@@ -106,6 +111,20 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq parted dosfstools e2fsprogs curl xz-utils zstd git rsync fdisk util-linux binutils minisign
 
+      # A build that boots but never passes its health check, to watch the
+      # boot watchdog roll back. Install it by hand with
+      #   doas env M17OS_CONF=<conf with UPDATE_URL=.../releases/download/TAG> m17os-upgrade --install
+      - name: Rollback test hook
+        if: inputs.rollback_test
+        run: |
+          cat > overlay/etc/m17os/health.d/99-rollback-test <<'HOOK'
+          #!/bin/sh
+          # Rollback test build: this slot must never be marked good
+          echo "rollback test build: always fails"
+          exit 1
+          HOOK
+          chmod 755 overlay/etc/m17os/health.d/99-rollback-test
+
       - name: Build image
         env:
           BUILD_COMMIT: ${{ github.sha }}
@@ -141,9 +160,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}
-          name: m17-hotspot-os ${{ env.VERSION }}
+          name: m17-hotspot-os ${{ env.VERSION }}${{ inputs.rollback_test && ' (rollback test - do not install)' || '' }}
+          prerelease: ${{ inputs.rollback_test == true }}
+          make_latest: ${{ inputs.rollback_test && 'false' || 'true' }}
           files: out/*
           body: |
+            ${{ inputs.rollback_test && '**Rollback test build. Do not install.** It always fails its health check, so a hotspot that boots it returns to its previous slot after three tries.' || '' }}
+
             # m17-hotspot-os ${{ env.VERSION }}
 
             Alpine Linux with the Raspberry Pi OS kernel, m17-gateway and the M17 web dashboard,

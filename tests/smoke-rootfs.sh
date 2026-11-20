@@ -453,6 +453,18 @@ check "package dry run exit" 0 "$?"
 grep -qE '^RESULT=(current|available)' /var/lib/m17os/autoupdate.status && ok || fail "package dry run: $(cat /tmp/au-dry2.log)"
 rm -f /var/lib/m17os/autoupdate.conf
 
+section "MQTT broker (Mosquitto)"
+apk info -e mosquitto >/dev/null && ok || fail "mosquitto not installed"
+[ -L /etc/runlevels/default/mosquitto ] && ok || fail "mosquitto not in the default runlevel"
+grep -q '^cfgfile="/etc/mosquitto/m17os.conf"' /etc/conf.d/mosquitto && ok || fail "conf.d/mosquitto doesn't use m17os.conf"
+check "MQTT Enable" true "$(ini_get /etc/m17-gateway.ini MQTT Enable)"
+check "MQTT Host" 127.0.0.1 "$(ini_get /etc/m17-gateway.ini MQTT Host)"
+grep -q 'location = /mqtt' /etc/nginx/http.d/default.conf && ok || fail "no /mqtt location in the nginx site"
+mosquitto -d -c /etc/mosquitto/m17os.conf 2>/tmp/mosquitto.err && sleep 1
+netstat -ltn 2>/dev/null | grep -q '127.0.0.1:1883 ' && ok || fail "mosquitto not on 127.0.0.1:1883: $(cat /tmp/mosquitto.err)"
+netstat -ltn 2>/dev/null | grep -q '127.0.0.1:9001 ' && ok || fail "mosquitto WebSocket listener not on 127.0.0.1:9001"
+netstat -ltn 2>/dev/null | grep -qE '0\.0\.0\.0:(1883|9001) ' && fail "mosquitto listens on every interface" || ok
+
 section "Setup wizard (m17-admin) behind nginx"
 [ -L /etc/runlevels/default/m17-admin ] && ok || fail "m17-admin not in the default runlevel"
 check "m17-admin state dir" "m17-admin:700" "$(stat -c %U:%a /var/lib/m17-admin)"

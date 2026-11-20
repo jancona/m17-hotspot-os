@@ -1,0 +1,3 @@
+# What browsers (the WebSocket listener, through nginx) may do: subscribe to
+# m17-gateway's status and log, nothing else.
+topic read m17-gateway/#

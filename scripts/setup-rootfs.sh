@@ -68,6 +68,9 @@ apk_add \
 	m17-sx1255-overlay \
 	m17-admin m17-admin-openrc
 
+# MQTT broker for m17-gateway's status (m17-admin and browsers subscribe)
+apk_add mosquitto mosquitto-openrc
+
 # The setup access point (started by m17os-netwatch when there's no
 # network, never as services of their own)
 apk_add hostapd dnsmasq
@@ -83,7 +86,7 @@ rc-update add swclock boot
 for s in m17os-data-resize m17os-varlog m17os-clock m17os-bindmounts m17os-config m17os-boot-watchdog; do
 	rc-update add "$s" boot
 done
-for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17-admin m17os-netwatch m17os-health-check; do
+for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx mosquitto m17-gateway m17-admin m17os-netwatch m17os-health-check; do
 	rc-update add "$s" default
 done
 
@@ -217,6 +220,22 @@ ini_set /etc/m17-gateway/m17-gateway.ini Log Level INFO
 ini_set /etc/m17-gateway/m17-gateway.ini General DashboardLog /data/log/m17-gateway/dashboard.log
 ln -sfn /data/log/m17-gateway/dashboard.log /var/lib/m17-dashboard/files/dashboard.log
 [ -L /etc/m17-gateway.ini ] || { echo "/etc/m17-gateway.ini link missing" >&2; exit 1; }
+# Status over MQTT to the local broker. A gateway without MQTT support
+# ignores the section.
+ini_set /etc/m17-gateway/m17-gateway.ini MQTT Enable true
+ini_set /etc/m17-gateway/m17-gateway.ini MQTT Host 127.0.0.1
+ini_set /etc/m17-gateway/m17-gateway.ini MQTT Port 1883
+ini_set /etc/m17-gateway/m17-gateway.ini MQTT Name m17-gateway
+ini_set /etc/m17-gateway/m17-gateway.ini MQTT LogLevel INFO
+
+# Mosquitto: our configuration (overlay/etc/mosquitto/m17os.conf), and
+# restarted if it dies
+cat >> /etc/conf.d/mosquitto <<'EOF'
+
+# m17-hotspot-os
+cfgfile="/etc/mosquitto/m17os.conf"
+supervisor="supervise-daemon"
+EOF
 
 # The dashboard's nginx site, as the default site
 cp /usr/share/rpi-dashboard/nginx-site.conf /etc/nginx/http.d/default.conf
@@ -231,6 +250,14 @@ awk '
 		print "\t\tproxy_set_header Host $host;"
 		print "\t\tproxy_set_header X-Forwarded-For $remote_addr;"
 		print "\t\tproxy_read_timeout 60s;"
+		print "\t}"
+		print "\t# m17-gateway status over MQTT, for browsers (read-only)"
+		print "\tlocation = /mqtt {"
+		print "\t\tproxy_pass http://127.0.0.1:9001;"
+		print "\t\tproxy_http_version 1.1;"
+		print "\t\tproxy_set_header Upgrade $http_upgrade;"
+		print "\t\tproxy_set_header Connection \"upgrade\";"
+		print "\t\tproxy_read_timeout 1h;"
 		print "\t}"
 		print "\t# Captive-portal checks from phones and laptops: while the setup"
 		print "\t# access point is up every name leads here, and m17-admin answers"

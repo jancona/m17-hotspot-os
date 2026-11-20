@@ -27,6 +27,8 @@ CONFIG_TXT="$FW_DIR/config.txt"
 
 # shellcheck source=../lib/m17os/ini.sh
 . "$LIB_DIR/ini.sh"
+# shellcheck source=../lib/m17os/bootslot.sh
+. "$LIB_DIR/bootslot.sh"   # for slot_event
 
 die() { echo "Error: $*" >&2; exit 1; }
 
@@ -119,6 +121,11 @@ case "$1" in
 					echo "Modem speed set to $speed."
 				fi
 				;;
+		esac
+		# A change of HAT is worth finding later in the event log
+		case "$type:$cur" in
+			cc1200:cc1200*|"$type:$type") ;;
+			*) slot_event "HAT changed from ${cur:-none} to $type" ;;
 		esac
 
 		if set_config_txt "$type"; then

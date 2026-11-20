@@ -71,6 +71,18 @@ warn() {
 	[ -n "$WARNINGS_FILE" ] && echo "$1" >> "$WARNINGS_FILE"
 }
 
+# valid_callsign CALLSIGN - true if m17-gateway accepts CALLSIGN (upper
+# case): a callsign, optionally with a prefix ("EA/N1ADJ") and a suffix
+# after a space, - / or . ("N1ADJ G"), at most 9 characters. The gateway's
+# check is m17.EncodeCallsign; this is slightly stricter about the
+# separators. A 6-7 character name with a letter suffix ("W100AW") is also
+# accepted, as the gateway does.
+valid_callsign() {
+	[ "${#1}" -le 9 ] || return 1
+	printf '%s\n' "$1" | grep -Eq \
+		'^(([0-9]?[A-Z]{1,2}[0-9]{0,2}/)?[0-9]?[A-Z]{1,2}[0-9]{1,2}[A-Z]{1,4}([ /.-][A-Z0-9 /.-]*)?|[A-Z][-A-Z0-9]{5,6}( +[ A-Z])?)$'
+}
+
 shadow_hash() {
 	sed -n "s/^$USER_NAME:\([^:]*\):.*/\1/p" /etc/shadow
 }
@@ -334,9 +346,10 @@ while IFS='=' read -r key value; do
 		callsign)
 			if $FROM_CONFIG_TXT; then
 				value=$(echo "$value" | tr '[:lower:]' '[:upper:]')
-				case "$value" in
-					*[!A-Z0-9/.\ -]*) warn "invalid callsign '$value'"; continue ;;
-				esac
+				if ! valid_callsign "$value"; then
+					warn "invalid callsign '$value'"
+					continue
+				fi
 				log "Setting callsign: $value"
 				gateway_set General Callsign "$value"
 			fi
@@ -399,6 +412,15 @@ while IFS='=' read -r key value; do
 				case "$value" in
 					*[!0-9-]*) warn "invalid power '$value'" ;;
 					*) gateway_set Radio Power "$value" ;;
+				esac
+			fi
+			;;
+		rf_level)
+			# MMDVM_HS transmit power, percent (repeater boards ignore it)
+			if $FROM_CONFIG_TXT; then
+				case "$value" in
+					[0-9]|[1-9][0-9]|100) gateway_set Modem RFLevel "$value" ;;
+					*) warn "rf_level must be 0 to 100" ;;
 				esac
 			fi
 			;;

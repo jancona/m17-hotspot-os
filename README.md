@@ -59,7 +59,8 @@ doas -u www-data php84 /opt/m17/rpi-dashboard/set_password.php
 | `hat` | `cc1200`, `sx1255` or `mmdvm`; also sets the usual serial speed (460800 for CC1200, 115200 for MMDVM) |
 | `modem_speed` | Serial speed to the HAT, if your board differs from the default for its type |
 | `frequency`, `rx_frequency`, `tx_frequency` | MHz (`439.5`) or Hz; `frequency` sets both |
-| `duplex`, `power` | `true`/`false`; transmit power in dBm |
+| `duplex`, `power` | `true`/`false`; transmit power in dBm (CC1200 HAT) |
+| `rf_level` | Transmit power in percent, 0-100 (MMDVM_HS hotspot boards) |
 | `reflector`, `module` | e.g. `M17-M17`, `C` |
 | `dashboard_password` | Password for the dashboard's admin pages (8+ characters) |
 | `auto_update`, `update_hour` | `auto` (default), `notify` or `off`; the local hour (0-23, default 3) in which updates run |

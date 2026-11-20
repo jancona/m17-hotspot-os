@@ -565,6 +565,15 @@ printf 'state=running\nfile=x.bin\nstarted=1\n' > "$HR/firmware.status"
 echo 999999 > "$HR/firmware.pid"
 helper firmware-status | grep -qx 'state=failed' && ok || fail "dead flash job shown running"
 
+# ── m17os-config: callsigns m17-gateway accepts ──────────────────────
+eval "$(sed -n '/^valid_callsign() {/,/^}/p' "$REPO_DIR/overlay/usr/local/bin/m17os-config")"
+for c in N1ADJ "N1ADJ G" N1ADJ-1 N1ADJ/P EA/N1ADJ 2E0ABC 4U1ITU K1A W100AW "VE3ABCD M"; do
+	valid_callsign "$c" && ok || fail "callsign '$c' refused"
+done
+for c in "" NADJ N1 1234 "BAD*CALL" N1ADJ_1 "N1ADJ  ABCD"; do
+	valid_callsign "$c" && fail "callsign '$c' accepted" || ok
+done
+
 PASS=$(wc -l < "$T/pass" | tr -d ' ')
 FAIL=$(wc -l < "$T/fail" | tr -d ' ')
 echo "unit: $PASS passed, $FAIL failed"

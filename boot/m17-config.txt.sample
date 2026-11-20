@@ -56,8 +56,10 @@
 #rx_frequency=439.500
 #tx_frequency=439.500
 #duplex=false
-# Transmit power, dBm
+# Transmit power, dBm (CC1200 HAT)
 #power=10
+# Transmit power, percent (MMDVM_HS hotspot boards; repeater boards ignore it)
+#rf_level=100
 #reflector=M17-M17
 #module=C
 

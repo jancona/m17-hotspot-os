@@ -8,7 +8,10 @@ description="m17-hotspot-os boot configuration processor" # used by OpenRC
 depend() {
 	need localmount m17os-bindmounts
 	after modules
-	before networking wpa_supplicant dhcpcd dropbear m17-gateway
+	# Before hostname and syslog too: a newly installed slot gets its
+	# hostname and time zone back from the saved settings here, and
+	# syslogd keeps the ones it started with
+	before hostname syslog networking wpa_supplicant dhcpcd dropbear m17-gateway
 }
 
 start() {

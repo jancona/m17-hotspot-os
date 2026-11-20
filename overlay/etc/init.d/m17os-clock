@@ -8,7 +8,8 @@ description="Restore the clock from the time saved on /data" # used by OpenRC
 depend() {
 	need localmount
 	after swclock
-	before m17os-boot-watchdog m17os-config m17os-health-check
+	# syslog too, so its first lines don't carry the build time
+	before syslog m17os-boot-watchdog m17os-config m17os-health-check
 }
 
 start() {

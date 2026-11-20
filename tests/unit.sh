@@ -428,18 +428,23 @@ cp "$REPO_DIR/boot/config.txt" "$HFW/config.txt"
 )
 HINI="$T/hat.ini"
 printf '[Modem]\nType=cc1200v2\nSpeed=230400\n' > "$HINI"
-hat() { M17OS_LIB="$LIB" M17OS_FW_DIR="$HFW" M17OS_GATEWAY_INI="$HINI" sh "$BIN/m17os-hat" "$@" >/dev/null 2>&1; echo $?; }
+HEV="$T/hat-events.log"
+hat() { M17OS_LIB="$LIB" M17OS_FW_DIR="$HFW" M17OS_GATEWAY_INI="$HINI" M17OS_EVENT_LOG="$HEV" sh "$BIN/m17os-hat" "$@" >/dev/null 2>&1; echo $?; }
+hat_events() { grep -c 'HAT changed' "$HEV" 2>/dev/null || echo 0; }
 if [ "$(id -u)" -eq 0 ]; then
 	check "hat cc1200 no change" 0 "$(hat set cc1200)"
 	check "cc1200 variant kept" cc1200v2 "$(ini_get "$HINI" Modem Type)"
 	check "speed kept when type unchanged" 230400 "$(ini_get "$HINI" Modem Speed)"
+	check "no event when the HAT is unchanged" 0 "$(hat_events)"
 	check "hat sx1255 reboot" 3 "$(hat set sx1255)"
+	grep -q 'HAT changed from cc1200v2 to sx1255' "$HEV" && ok || fail "HAT change not in the event log"
 	check "sx1255 type" sx1255 "$(ini_get "$HINI" Modem Type)"
 	check "i2s overlay" 1 "$(grep -c '^dtoverlay=genericstereoaudiocodec' "$HFW/config.txt")"
 	# HAT block must come before the slot block, so os_prefix stays last
 	last=$(grep -v '^#' "$HFW/config.txt" | grep -v '^$' | tail -1)
 	check "os_prefix last" "os_prefix=slotA/" "$last"
 	check "hat sx1255 again" 0 "$(hat set sx1255)"
+	check "setting the same HAT again logs nothing" 1 "$(hat_events)"
 	check "hat mmdvm reboot" 3 "$(hat set mmdvm)"
 	check "mmdvm default speed" 115200 "$(ini_get "$HINI" Modem Speed)"
 	ini_set "$HINI" Modem Speed 460800
@@ -564,6 +569,41 @@ helper firmware-status | grep -qx 'state=failed' && ok || fail "failed flash not
 printf 'state=running\nfile=x.bin\nstarted=1\n' > "$HR/firmware.status"
 echo 999999 > "$HR/firmware.pid"
 helper firmware-status | grep -qx 'state=failed' && ok || fail "dead flash job shown running"
+
+# ── boot watchdog: counting and the rollback message ─────────────────
+wd() { # wd TRIES MAX: run the watchdog's start() for a pending slot; prints its log
+	(
+		tries=$1 max=$2
+		# The library from the repo, no m17os.conf, and the rollback (which
+		# reboots) a no-op
+		sed -e "s|/usr/local/lib/m17os/bootslot.sh|$LIB/bootslot.sh|" \
+			-e "s|^\[ -f /etc/m17os/m17os.conf \].*||" \
+			-e "s|/usr/local/bin/m17os-rollback --force|true|" \
+			"$REPO_DIR/overlay/etc/init.d/m17os-boot-watchdog" > "$T/wd.sh"
+		M17OS_EVENT_LOG="$T/wd-events.log"
+		: > "$M17OS_EVENT_LOG"
+		. "$T/wd.sh"
+		MAX_BOOT_TRIES=$max
+		ebegin() { :; }; eend() { :; }; ewarn() { :; }
+		read_slot_conf() { ACTIVE_SLOT=A PREVIOUS_SLOT=B PENDING=true BOOT_TRIES=$tries; }
+		write_slot_conf() { :; }
+		booted_slot() { echo A; }
+		start >/dev/null 2>&1
+		cat "$M17OS_EVENT_LOG"
+	)
+}
+out=$(wd 0 3)
+echo "$out" | grep -q 'boot try 1 of 3' && ok || fail "watchdog first try: $out"
+out=$(wd 2 3)
+echo "$out" | grep -q 'boot try 3 of 3' && ok || fail "watchdog last try: $out"
+out=$(wd 3 3)
+echo "$out" | grep -q 'failed 3 boots - rolling back to slot B' && ok || fail "watchdog rollback: $out"
+echo "$out" | grep -q 'try 4 of 3' && fail "watchdog says try 4 of 3: $out" || ok
+
+# ── init order: syslog after the clock, hostname and time zone ───────
+dep() { sed -n '/^depend()/,/^}/p' "$REPO_DIR/overlay/etc/init.d/$1" | grep -E "^\s*before" ; }
+dep m17os-config | grep -qw syslog && dep m17os-config | grep -qw hostname && ok || fail "m17os-config not before syslog and hostname"
+dep m17os-clock | grep -qw syslog && ok || fail "m17os-clock not before syslog"
 
 # ── m17os-config: callsigns m17-gateway accepts ──────────────────────
 eval "$(sed -n '/^valid_callsign() {/,/^}/p' "$REPO_DIR/overlay/usr/local/bin/m17os-config")"

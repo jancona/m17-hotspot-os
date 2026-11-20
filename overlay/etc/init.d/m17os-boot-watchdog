@@ -52,13 +52,11 @@ start() {
 	fi
 
 	BOOT_TRIES=$((BOOT_TRIES + 1))
-	ebegin "Boot watchdog: try $BOOT_TRIES of $MAX_BOOT_TRIES for slot $ACTIVE_SLOT"
-	log notice "Slot $ACTIVE_SLOT pending: boot try $BOOT_TRIES of $MAX_BOOT_TRIES"
-
 	write_slot_conf
 
 	if [ "$BOOT_TRIES" -gt "$MAX_BOOT_TRIES" ]; then
-		ewarn "Too many failed boots - rolling back to slot $PREVIOUS_SLOT"
+		# Not "try 4 of 3": the tries are used up
+		ewarn "Slot $ACTIVE_SLOT failed $MAX_BOOT_TRIES boots - rolling back to slot $PREVIOUS_SLOT"
 		log warn "Slot $ACTIVE_SLOT failed $MAX_BOOT_TRIES boots - rolling back to slot $PREVIOUS_SLOT"
 		/usr/local/bin/m17os-rollback --force
 		# m17os-rollback --force reboots; only reached if it failed
@@ -66,5 +64,7 @@ start() {
 		return 1
 	fi
 
+	ebegin "Boot watchdog: try $BOOT_TRIES of $MAX_BOOT_TRIES for slot $ACTIVE_SLOT"
+	log notice "Slot $ACTIVE_SLOT pending: boot try $BOOT_TRIES of $MAX_BOOT_TRIES"
 	eend 0
 }

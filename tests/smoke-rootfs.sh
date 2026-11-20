@@ -61,6 +61,16 @@ for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17os-heal
 	[ -L "/etc/runlevels/default/$s" ] && ok || fail "$s not in default runlevel"
 done
 
+# syslog starts after the clock and after m17os-config restores the
+# hostname and time zone, so its first lines carry neither the build time
+# nor the image's default hostname. (hostname and swclock don't run in a
+# container, so they aren't in this order.)
+rc-update -u >/dev/null 2>&1
+# shellcheck disable=SC2046 # one argument per service
+order=$(/usr/libexec/rc/bin/rc-depend -s $(ls /etc/runlevels/boot) 2>&1 | tr ' ' '\n')
+pos() { echo "$order" | grep -nx "$1" | cut -d: -f1; }
+[ -n "$(pos syslog)" ] && [ "$(pos m17os-clock)" -lt "$(pos syslog)" ] && [ "$(pos m17os-config)" -lt "$(pos syslog)" ] && ok || \
+	fail "boot order: $(echo $order)"
 getent passwd ntp >/dev/null && ok || fail "no ntp user for the ntpd service"
 [ -x /usr/lib/ssh/sftp-server ] && ok || fail "no sftp-server, so scp to the hotspot fails"
 grep -q 'rc-service ntpd status' /usr/lib/dhcpcd/dhcpcd-hooks/30-time-sync && ok || fail "time-sync hook not updated"

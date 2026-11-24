@@ -42,7 +42,7 @@ fi
 section "Packages and boot files"
 for p in raspios-kernel-v8 raspios-kernel-2712 raspios-firmware nginx php84-fpm doas minisign avahi stm32flash \
 	m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 m17-firmware-mmdvm-hs \
-	m17-firmware-mmdvm m17-sx1255-overlay m17-admin m17-admin-openrc; do
+	m17-firmware-mmdvm m17-sx1255-overlay m17-web m17-web-openrc; do
 	apk info -e "$p" >/dev/null && ok || fail "package $p not installed"
 done
 for f in kernel8.img kernel_2712.img cmdline.txt overlays/genericstereoaudiocodec.dtbo; do
@@ -364,10 +364,10 @@ case "$out" in *"reboot: true"*) ok ;; *) fail "apply reboot flag for SX1255: $o
 printf 'hat=cc1200\n' | sh /usr/local/bin/m17os-config --apply >/dev/null
 ini_set /etc/m17-gateway.ini Reflector Name M17-M17
 
-section "Admin helper, run by m17-admin through doas"
-adduser -S -D -H -s /sbin/nologin m17-admin 2>/dev/null
+section "Admin helper, run by m17-web through doas"
+adduser -S -D -H -s /sbin/nologin m17-web 2>/dev/null
 helper=/usr/local/libexec/m17os/admin-helper
-as_admin() { su -s /bin/sh m17-admin -c "$*"; }
+as_admin() { su -s /bin/sh m17-web -c "$*"; }
 out=$(as_admin "doas -n $helper wifi-configured" 2>&1)
 check "helper: configured networks" "country=GB ssid=WizardNet" "$(echo $out)"
 printf 'AUTO_UPDATE=notify\nUPDATE_HOUR=4\nevil=$(id)\n' > /var/lib/m17os/autoupdate.conf
@@ -409,7 +409,7 @@ as_admin "doas -n $helper rm -rf /" >/dev/null 2>&1
 check "helper refuses unknown commands" 2 "$?"
 as_admin "doas -n $helper wifi-configured extra" >/dev/null 2>&1
 check "helper refuses extra arguments" 2 "$?"
-as_admin "doas -n /bin/sh -c id" >/dev/null 2>&1 && fail "m17-admin can run any command through doas" || ok
+as_admin "doas -n /bin/sh -c id" >/dev/null 2>&1 && fail "m17-web can run any command through doas" || ok
 su -s /bin/sh www-data -c "doas -n $helper wifi-configured" >/dev/null 2>&1 && fail "www-data can run the admin helper" || ok
 
 section "HAT firmware (m17os-firmware)"
@@ -453,16 +453,16 @@ check "package dry run exit" 0 "$?"
 grep -qE '^RESULT=(current|available)' /var/lib/m17os/autoupdate.status && ok || fail "package dry run: $(cat /tmp/au-dry2.log)"
 rm -f /var/lib/m17os/autoupdate.conf
 
-section "Setup wizard (m17-admin) behind nginx"
-[ -L /etc/runlevels/default/m17-admin ] && ok || fail "m17-admin not in the default runlevel"
-check "m17-admin state dir" "m17-admin:700" "$(stat -c %U:%a /var/lib/m17-admin)"
-id m17-admin | grep -q dialout && ok || fail "m17-admin can't open the serial port: $(id m17-admin)"
+section "Setup wizard (m17-web) behind nginx"
+[ -L /etc/runlevels/default/m17-web ] && ok || fail "m17-web not in the default runlevel"
+check "m17-web state dir" "m17-web:700" "$(stat -c %U:%a /var/lib/m17-web)"
+id m17-web | grep -q dialout && ok || fail "m17-web can't open the serial port: $(id m17-web)"
 grep -q 'location \^~ /setup/' /etc/nginx/http.d/default.conf && ok || fail "no /setup/ location in the nginx site"
 nginx -t 2>/dev/null && ok || fail "nginx -t with the /setup/ location"
 nginx -s reload 2>/dev/null || nginx
-su -s /bin/sh m17-admin -c '/usr/bin/m17-admin -listen 127.0.0.1:8090 -state-dir /var/lib/m17-admin >/tmp/m17-admin.log 2>&1 &'
+su -s /bin/sh m17-web -c '/usr/bin/m17-web -listen 127.0.0.1:8090 -state-dir /var/lib/m17-web >/tmp/m17-web.log 2>&1 &'
 for i in 1 2 3 4 5 6 7 8 9 10; do wget -q -O /dev/null http://127.0.0.1:8090/setup/static/style.css 2>/dev/null && break; sleep 1; done
-wget -q -O /tmp/setup.html http://127.0.0.1/setup/ && ok || fail "GET /setup/ through nginx: $(tail -3 /tmp/m17-admin.log)"
+wget -q -O /tmp/setup.html http://127.0.0.1/setup/ && ok || fail "GET /setup/ through nginx: $(tail -3 /tmp/m17-web.log)"
 # A dashboard password was set above, so the wizard asks for it
 grep -q 'Admin password' /tmp/setup.html && grep -q '/setup/login' /tmp/setup.html && ok || \
 	fail "the wizard's login page didn't come through nginx: $(head -c 300 /tmp/setup.html)"
@@ -508,7 +508,7 @@ rm -f /run/m17os/request-join /run/m17os/mode
 out=$(printf 'callsign=N0CALL\n' | M17OS_ACTION_DELAY=0 sh /usr/local/libexec/m17os/admin-helper apply)
 case "$out" in *"network: false"*) ok ;; *) fail "apply off the AP without WiFi changes: $out" ;; esac
 
-pkill -f '/usr/bin/m17-admin' 2>/dev/null
+pkill -f '/usr/bin/m17-web' 2>/dev/null
 
 section "Gateway health hook"
 /etc/m17os/health.d/50-m17-gateway >/tmp/hook 2>&1

@@ -18,7 +18,7 @@
 #
 # m17os-config --apply
 #   Applies settings read from stdin, in m17-config.txt form (key=value
-#   lines), for the setup wizard (m17-admin). Nothing is restarted. Instead
+#   lines), for the setup wizard (m17-web). Nothing is restarted. Instead
 #   of log lines, it prints the result:
 #     warning: <a setting that wasn't applied>    (one per warning)
 #     reboot: true|false      a config.txt change needs a reboot
@@ -55,7 +55,7 @@ PW_MARKER="/etc/.m17os-password-restored"
 log() {
 	[ -d "$SAVED_DIR" ] || mkdir -p "$SAVED_DIR"
 	if $APPLY; then
-		# stdout is the result for m17-admin
+		# stdout is the result for m17-web
 		echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 	else
 		echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"

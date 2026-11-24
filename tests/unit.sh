@@ -191,7 +191,7 @@ case "\$*" in
 	"update -q") exit 0 ;;
 	"upgrade --simulate "*)
 		[ -f "$AU/pkg-available" ] && echo "(1/1) Upgrading m17-gateway (0.9.3-r0 -> 0.9.4-r0)"
-		[ -f "$AU/admin-available" ] && echo "(1/2) Upgrading m17-admin (0_git1-r0 -> 0_git1-r1)" && echo "(2/2) Upgrading m17-admin-openrc (0_git1-r0 -> 0_git1-r1)"
+		[ -f "$AU/admin-available" ] && echo "(1/2) Upgrading m17-web (0_git1-r0 -> 0_git1-r1)" && echo "(2/2) Upgrading m17-web-openrc (0_git1-r0 -> 0_git1-r1)"
 		exit 0 ;;
 	"upgrade -q "*) exit 0 ;;
 esac
@@ -261,11 +261,11 @@ if [ "$(id -u)" -eq 0 ]; then
 	rm -f "$AU/pkg-available"
 	touch "$AU/admin-available"
 	au --now >/dev/null
-	check "m17-admin restarted after its update" "m17-admin status;m17-admin restart;" "$(calls rc)"
+	check "m17-web restarted after its update" "m17-web status;m17-web restart;" "$(calls rc)"
 	# Several at once (one per line from apk): each one restarted
 	touch "$AU/pkg-available"
 	au --now >/dev/null
-	check "gateway and m17-admin both restarted" "m17-gateway status;m17-gateway restart;m17-admin status;m17-admin restart;" "$(calls rc)"
+	check "gateway and m17-web both restarted" "m17-gateway status;m17-gateway restart;m17-web status;m17-web restart;" "$(calls rc)"
 	rm -f "$AU/admin-available" "$AU/pkg-available"
 	check "nothing to do" 0 "$(au --now)"
 	check "nothing result" current "$(result)"

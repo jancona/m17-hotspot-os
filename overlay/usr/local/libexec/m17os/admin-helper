@@ -1,6 +1,6 @@
 #!/bin/sh
-# admin-helper - the privileged actions of the setup wizard (m17-admin)
-# Part of m17-hotspot-os. m17-admin runs as its own unprivileged user; this
+# admin-helper - the privileged actions of the setup wizard (m17-web)
+# Part of m17-hotspot-os. m17-web runs as its own unprivileged user; this
 # is the only thing it may run as root (see /etc/doas.d/m17os.conf). Each
 # command is fixed, and nothing from the caller reaches a shell.
 #

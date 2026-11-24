@@ -38,7 +38,7 @@ IDLE_WAIT="${M17OS_IDLE_WAIT:-1800}"   # seconds to wait for an idle gateway
 IDLE_POLL="${M17OS_IDLE_POLL:-30}"
 MAX_DELAY="${M17OS_MAX_DELAY:-2700}"   # random start delay in the hour
 M17_PACKAGES="m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 \
-m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay m17-admin m17-admin-openrc"
+m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay m17-web m17-web-openrc"
 
 # shellcheck source=../lib/m17os/bootslot.sh
 . "$LIB_DIR/bootslot.sh"
@@ -77,7 +77,7 @@ esac
 
 say() { echo "$*"; }
 event() { slot_event "autoupdate: $*"; say "$*"; }
-# status KEY=VALUE... - record the run's results for m17-admin
+# status KEY=VALUE... - record the run's results for m17-web
 status() {
 	mkdir -p "$STATE_DIR"
 	{ echo "TIME=$(date '+%Y-%m-%d %H:%M:%S %Z')"; for kv in "$@"; do echo "$kv"; done; } > "$STATUS.tmp" &&
@@ -212,8 +212,8 @@ updated=" $(echo "$pending" | awk '{ print $1 }' | tr '\n' ' ')"
 case "$updated" in *" m17-gateway "*)
 	rc-service m17-gateway status >/dev/null 2>&1 && rc-service m17-gateway restart >/dev/null 2>&1 && say "Restarted m17-gateway" ;;
 esac
-case "$updated" in *" m17-admin "*)
-	rc-service m17-admin status >/dev/null 2>&1 && rc-service m17-admin restart >/dev/null 2>&1 && say "Restarted m17-admin" ;;
+case "$updated" in *" m17-web "*)
+	rc-service m17-web status >/dev/null 2>&1 && rc-service m17-web restart >/dev/null 2>&1 && say "Restarted m17-web" ;;
 esac
 case "$updated" in *" rpi-dashboard "*)
 	rc-service php-fpm84 status >/dev/null 2>&1 && rc-service php-fpm84 restart >/dev/null 2>&1 && say "Restarted php-fpm84" ;;

@@ -12,7 +12,7 @@ Download the image, write it to a card, boot, and set your callsign. No Raspberr
 |---|---|
 | **Base** | Alpine Linux userland with the Raspberry Pi OS kernel and firmware, from [RasPINE](https://github.com/MW0MWZ/RasPINE) |
 | **Hardware** | Raspberry Pi Zero 2 W, 3, 4, 5 (64-bit only) |
-| **M17** | m17-gateway, rpi-dashboard (nginx + PHP-FPM), the [m17-admin](https://github.com/jancona/m17-admin) setup wizard, HAT firmware (CC1200, MMDVM_HS, MMDVM) and the SX1255 I2S codec overlay, from the [m17-apk](https://github.com/jancona/m17-apk) package repository; stm32flash |
+| **M17** | m17-gateway, rpi-dashboard (nginx + PHP-FPM), the [m17-web](https://github.com/jancona/m17-web) setup wizard, HAT firmware (CC1200, MMDVM_HS, MMDVM) and the SX1255 I2S codec overlay, from the [m17-apk](https://github.com/jancona/m17-apk) package repository; stm32flash |
 | **Updates** | A/B root partitions with boot watchdog, health check and automatic rollback, based on [Pi-Star OS](https://github.com/MW0MWZ/Pi-Star_OS) |
 | **Footprint** | Logs in RAM to spare the SD card, except the dashboard's activity log (one line per event), which is kept on `/data` so recent activity survives reboots; settings on a separate `/data` partition |
 
@@ -67,7 +67,7 @@ doas -u www-data php84 /opt/m17/rpi-dashboard/set_password.php
 
 The full list with comments is in [`boot/m17-config.txt.sample`](boot/m17-config.txt.sample).
 
-The setup wizard ([m17-admin](https://github.com/jancona/m17-admin)) applies the same keys, through `m17os-config --apply` (settings on stdin, a `warning:`/`reboot:`/`network:`/`gateway:` result on stdout). It runs as its own user and reaches root only through `/usr/local/libexec/m17os/admin-helper`, which accepts a fixed set of commands. `reflector=none` means no reflector (RF only).
+The setup wizard ([m17-web](https://github.com/jancona/m17-web)) applies the same keys, through `m17os-config --apply` (settings on stdin, a `warning:`/`reboot:`/`network:`/`gateway:` result on stdout). It runs as its own user and reaches root only through `/usr/local/libexec/m17os/admin-helper`, which accepts a fixed set of commands. `reflector=none` means no reflector (RF only).
 
 The gateway settings go into `/etc/m17-gateway.ini`, the file the dashboard's Gateway page edits; everything else there can be changed on that page.
 

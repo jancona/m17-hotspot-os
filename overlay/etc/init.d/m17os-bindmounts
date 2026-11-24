@@ -16,7 +16,7 @@ PERSIST_ROOTS="etc var/lib"
 
 # Always persisted: created on /data when the rootfs has them, so systems
 # whose /data predates them pick them up too.
-ENSURE_DIRS="etc/dropbear etc/wpa_supplicant etc/dhcpcd etc/m17-gateway var/lib/m17-gateway var/lib/m17-dashboard var/lib/m17-admin var/lib/m17os"
+ENSURE_DIRS="etc/dropbear etc/wpa_supplicant etc/dhcpcd etc/m17-gateway var/lib/m17-gateway var/lib/m17-dashboard var/lib/m17-web var/lib/m17os"
 
 depend() {
 	need localmount

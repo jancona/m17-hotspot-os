@@ -66,7 +66,7 @@ apk_add \
 	m17-gateway m17-gateway-openrc rpi-dashboard \
 	m17-firmware-cc1200 m17-firmware-mmdvm-hs m17-firmware-mmdvm \
 	m17-sx1255-overlay \
-	m17-admin m17-admin-openrc
+	m17-web m17-web-openrc
 
 # The setup access point (started by m17os-netwatch when there's no
 # network, never as services of their own)
@@ -83,7 +83,7 @@ rc-update add swclock boot
 for s in m17os-data-resize m17os-varlog m17os-clock m17os-bindmounts m17os-config m17os-boot-watchdog; do
 	rc-update add "$s" boot
 done
-for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17-admin m17os-netwatch m17os-health-check; do
+for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17-web m17os-netwatch m17os-health-check; do
 	rc-update add "$s" default
 done
 
@@ -220,11 +220,11 @@ ln -sfn /data/log/m17-gateway/dashboard.log /var/lib/m17-dashboard/files/dashboa
 
 # The dashboard's nginx site, as the default site
 cp /usr/share/rpi-dashboard/nginx-site.conf /etc/nginx/http.d/default.conf
-# The setup wizard (m17-admin) at /setup/. ^~ keeps the dashboard's PHP
+# The setup wizard (m17-web) at /setup/. ^~ keeps the dashboard's PHP
 # location from matching these paths.
 awk '
 	/^[[:space:]]*location ~ \\\.php\$ \{/ && !done {
-		print "\t# The setup wizard (m17-admin)"
+		print "\t# The setup wizard (m17-web)"
 		print "\tlocation = /setup { return 302 /setup/; }"
 		print "\tlocation ^~ /setup/ {"
 		print "\t\tproxy_pass http://127.0.0.1:8090;"
@@ -233,7 +233,7 @@ awk '
 		print "\t\tproxy_read_timeout 60s;"
 		print "\t}"
 		print "\t# Captive-portal checks from phones and laptops: while the setup"
-		print "\t# access point is up every name leads here, and m17-admin answers"
+		print "\t# access point is up every name leads here, and m17-web answers"
 		print "\t# them with the wizard"
 		print "\tlocation ~ ^/(generate_204|gen_204|hotspot-detect\\.html|library/test/success\\.html|connecttest\\.txt|ncsi\\.txt|redirect|success\\.txt|canonical\\.html)$ {"
 		print "\t\tproxy_pass http://127.0.0.1:8090;"

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Health hook: the web pages (nginx and m17-web) answer.
+# Exit 0 = healthy. On failure, print a short reason.
+
+rc-update show default 2>/dev/null | grep -q '^ *nginx ' || exit 0
+if ! wget -q -T 5 -O /dev/null http://127.0.0.1/dashboard/; then
+	echo "no answer from http://127.0.0.1/dashboard/"
+	exit 1
+fi
+exit 0

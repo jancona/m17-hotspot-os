@@ -162,7 +162,7 @@ pkg_version() {
 }
 # Every package from the M17 repository, for the manifest: a change here
 # is a reason to build a new release
-M17_PACKAGES=$(for p in m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 \
+M17_PACKAGES=$(for p in m17-gateway m17-gateway-openrc m17-firmware-cc1200 \
 	m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay m17-web m17-web-openrc; do
 	printf '%s-%s ' "$p" "$(pkg_version "$p")"; done | sed 's/ $//')
 
@@ -173,7 +173,7 @@ Build Date: ${BUILD_DATE}
 Alpine Version: ${ALPINE_RELEASE:-$ALPINE_VERSION}
 Architecture: ${ALPINE_ARCH}
 m17-gateway: $(pkg_version m17-gateway)
-rpi-dashboard: $(pkg_version rpi-dashboard)
+m17-web: $(pkg_version m17-web)
 Base: Alpine Linux with the Raspberry Pi OS kernel from RasPINE
 EOF
 
@@ -221,7 +221,7 @@ ALPINE_VERSION=${ALPINE_RELEASE:-$ALPINE_VERSION}
 ROOTFS_FILENAME=${ROOTFS}
 ROOTFS_SHA256=${ROOTFS_SHA256}
 M17_GATEWAY_VERSION=$(pkg_version m17-gateway)
-RPI_DASHBOARD_VERSION=$(pkg_version rpi-dashboard)
+M17_WEB_VERSION=$(pkg_version m17-web)
 M17_PACKAGES=${M17_PACKAGES}
 RASPINE_KERNEL=$(pkg_version raspios-kernel-v8)
 BUILD_COMMIT=${BUILD_COMMIT:-$(git -C "$REPO_DIR" rev-parse --verify -q HEAD 2>/dev/null || echo unknown)}

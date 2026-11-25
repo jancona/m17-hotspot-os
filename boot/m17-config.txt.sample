@@ -44,7 +44,7 @@
 
 # === M17 HOTSPOT ===
 # These change /etc/m17-gateway.ini. Everything else can be set later on
-# the dashboard's Gateway page (http://m17-hotspot.local/).
+# the admin pages (http://m17-hotspot.local/admin/), most of it on Expert.
 #callsign=N0CALL
 # Radio HAT: cc1200, sx1255 or mmdvm (sx1255 needs one extra reboot)
 #hat=cc1200
@@ -63,7 +63,7 @@
 #reflector=M17-M17
 #module=C
 
-# Password for the dashboard's Gateway and Settings pages. It must be at
+# Password for the admin pages (it was also the old dashboard's). It must be at
 # least 8 characters: a shorter one is ignored (the reason is logged; see
 # m17os-slot-info).
 #dashboard_password=choose-something

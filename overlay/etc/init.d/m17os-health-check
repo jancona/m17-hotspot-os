@@ -19,7 +19,7 @@ description="m17-hotspot-os health check (validates an A/B slot after upgrade)" 
 
 depend() {
 	use net logger
-	after net m17os-boot-watchdog m17-gateway nginx php-fpm84
+	after net m17os-boot-watchdog m17-gateway nginx m17-web
 }
 
 # shellcheck source=../../usr/local/lib/m17os/bootslot.sh

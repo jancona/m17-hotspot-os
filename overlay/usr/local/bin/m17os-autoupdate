@@ -30,7 +30,7 @@
 # Each run, OS release first: if m17os-upgrade finds a newer signed
 # release, it is installed to the other slot and the hotspot reboots into
 # it (the A/B health check and rollback take it from there). Otherwise the
-# M17 packages (m17-gateway, rpi-dashboard, firmware) are upgraded from
+# M17 packages (m17-gateway, m17-web, firmware) are upgraded from
 # the m17-apk repository. Other Alpine packages and the kernel are left to
 # OS releases: a kernel upgraded with apk would not match the slot's boot
 # files. Nothing is installed while the gateway is busy.
@@ -48,7 +48,7 @@ UPGRADE="${M17OS_UPGRADE:-/usr/local/bin/m17os-upgrade}"
 IDLE_WAIT="${M17OS_IDLE_WAIT:-1800}"   # seconds to wait for an idle gateway
 IDLE_POLL="${M17OS_IDLE_POLL:-30}"
 MAX_DELAY="${M17OS_MAX_DELAY:-2700}"   # random start delay in the hour
-M17_PACKAGES="m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 \
+M17_PACKAGES="m17-gateway m17-gateway-openrc m17-firmware-cc1200 \
 m17-firmware-mmdvm-hs m17-firmware-mmdvm m17-sx1255-overlay m17-web m17-web-openrc"
 
 # shellcheck source=../lib/m17os/bootslot.sh
@@ -281,8 +281,5 @@ case "$updated" in *" m17-gateway "*)
 esac
 case "$updated" in *" m17-web "*)
 	rc-service m17-web status >/dev/null 2>&1 && rc-service m17-web restart >/dev/null 2>&1 && say "Restarted m17-web" ;;
-esac
-case "$updated" in *" rpi-dashboard "*)
-	rc-service php-fpm84 status >/dev/null 2>&1 && rc-service php-fpm84 restart >/dev/null 2>&1 && say "Restarted php-fpm84" ;;
 esac
 exit 0

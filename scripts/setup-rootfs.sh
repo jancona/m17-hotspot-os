@@ -10,7 +10,6 @@
 
 set -eu
 
-PHP=php84
 
 # ── Packages ─────────────────────────────────────────────────────────
 echo "nameserver 1.1.1.1" > /etc/resolv.conf
@@ -46,7 +45,7 @@ apk_add \
 	ca-certificates tzdata curl minisign procps \
 	doas doas-sudo-shim \
 	avahi \
-	nginx $PHP $PHP-fpm $PHP-session $PHP-opcache $PHP-ctype $PHP-mbstring \
+	nginx \
 	stm32flash
 
 # The Raspberry Pi OS kernel looks for modules and firmware under /lib;
@@ -63,12 +62,12 @@ update-ca-certificates >/dev/null 2>&1 || true
 # M17 software from the m17-apk repository. It stays in
 # /etc/apk/repositories, so the hotspot can update these with apk.
 apk_add \
-	m17-gateway m17-gateway-openrc rpi-dashboard \
+	m17-gateway m17-gateway-openrc \
 	m17-firmware-cc1200 m17-firmware-mmdvm-hs m17-firmware-mmdvm \
 	m17-sx1255-overlay \
 	m17-web m17-web-openrc
 
-# MQTT broker for m17-gateway's status (m17-web and browsers subscribe)
+# MQTT broker for m17-gateway's status (m17-web subscribes)
 apk_add mosquitto mosquitto-openrc
 
 # The setup access point (started by m17os-netwatch when there's no
@@ -86,7 +85,7 @@ rc-update add swclock boot
 for s in m17os-data-resize m17os-varlog m17os-clock m17os-bindmounts m17os-config m17os-boot-watchdog; do
 	rc-update add "$s" boot
 done
-for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx mosquitto m17-gateway m17-web m17os-netwatch m17os-health-check; do
+for s in dropbear crond ntpd avahi-daemon nginx mosquitto m17-gateway m17-web m17os-netwatch m17os-health-check; do
 	rc-update add "$s" default
 done
 
@@ -208,17 +207,15 @@ chmod 0600 /etc/doas.d/m17os.conf
 
 # ── M17 software settings ────────────────────────────────────────────
 # The packages created the m17-gateway user, its configuration in
-# /etc/m17-gateway/ (persistent on /data), the host files in
-# /var/lib/m17-gateway/ and the dashboard's settings in
-# /var/lib/m17-dashboard/. The image only changes defaults.
+# /etc/m17-gateway/ (persistent on /data) and the host files in
+# /var/lib/m17-gateway/. The image only changes defaults.
 . /usr/local/lib/m17os/ini.sh
 ini_set /etc/m17-gateway/m17-gateway.ini Log Level INFO
-# The dashboard's recent activity comes from this log, so it goes on /data
-# rather than the /var/log tmpfs, and survives reboots. It only gets a line
-# per event (a transmission, a reflector connect), so it adds little SD
-# card wear. m17os-config creates the directory at boot.
+# m17os-autoupdate reads this log to find whether the gateway is busy (a
+# transmission under way) before it updates, so it goes on /data rather
+# than the /var/log tmpfs. It only gets a line per event, so it adds little
+# SD card wear. m17os-config creates the directory at boot.
 ini_set /etc/m17-gateway/m17-gateway.ini General DashboardLog /data/log/m17-gateway/dashboard.log
-ln -sfn /data/log/m17-gateway/dashboard.log /var/lib/m17-dashboard/files/dashboard.log
 [ -L /etc/m17-gateway.ini ] || { echo "/etc/m17-gateway.ini link missing" >&2; exit 1; }
 # Status over MQTT to the local broker. A gateway without MQTT support
 # ignores the section.
@@ -237,77 +234,33 @@ cfgfile="/etc/mosquitto/m17os.conf"
 supervisor="supervise-daemon"
 EOF
 
-# The dashboard's nginx site, as the default site
-cp /usr/share/rpi-dashboard/nginx-site.conf /etc/nginx/http.d/default.conf
-# m17-web: the setup wizard at /setup/, its admin pages at /admin/, its
-# dashboard at /dashboard/ (rpi-dashboard stays at /). ^~
-# keeps rpi-dashboard's PHP location from matching these paths.
-awk '
-	/^[[:space:]]*location ~ \\\.php\$ \{/ && !done {
-		print "\t# The setup wizard (m17-web)"
-		print "\tlocation = /setup { return 302 /setup/; }"
-		print "\tlocation ^~ /setup/ {"
-		print "\t\tproxy_pass http://127.0.0.1:8090;"
-		print "\t\tproxy_set_header Host $host;"
-		print "\t\tproxy_set_header X-Forwarded-For $remote_addr;"
-		print "\t\tproxy_read_timeout 60s;"
-		print "\t}"
-		print "\t# Its admin pages"
-		print "\tlocation = /admin { return 302 /admin/; }"
-		print "\tlocation ^~ /admin/ {"
-		print "\t\tproxy_pass http://127.0.0.1:8090;"
-		print "\t\tproxy_set_header Host $host;"
-		print "\t\tproxy_set_header X-Forwarded-For $remote_addr;"
-		print "\t\tproxy_read_timeout 60s;"
-		print "\t}"
-		print "\t# Its public dashboard. /dashboard/events is a Server-Sent"
-		print "\t# Events stream: m17-web turns off buffering for it, and a"
-		print "\t# keepalive every 25 s keeps it inside the read timeout"
-		print "\tlocation = /dashboard { return 302 /dashboard/; }"
-		print "\tlocation ^~ /dashboard/ {"
-		print "\t\tproxy_pass http://127.0.0.1:8090;"
-		print "\t\tproxy_set_header Host $host;"
-		print "\t\tproxy_set_header X-Forwarded-For $remote_addr;"
-		print "\t\tproxy_read_timeout 1h;"
-		print "\t}"
-		print "\t# m17-gateway status over MQTT, for browsers (read-only)"
-		print "\tlocation = /mqtt {"
-		print "\t\tproxy_pass http://127.0.0.1:9001;"
-		print "\t\tproxy_http_version 1.1;"
-		print "\t\tproxy_set_header Upgrade $http_upgrade;"
-		print "\t\tproxy_set_header Connection \"upgrade\";"
-		print "\t\tproxy_read_timeout 1h;"
-		print "\t}"
-		print "\t# Captive-portal checks from phones and laptops: while the setup"
-		print "\t# access point is up every name leads here, and m17-web answers"
-		print "\t# them with the wizard"
-		print "\tlocation ~ ^/(generate_204|gen_204|hotspot-detect\\.html|library/test/success\\.html|connecttest\\.txt|ncsi\\.txt|redirect|success\\.txt|canonical\\.html)$ {"
-		print "\t\tproxy_pass http://127.0.0.1:8090;"
-		print "\t\tproxy_set_header Host $host;"
-		print "\t}"
-		print ""
-		done = 1
+# The web pages: nginx in front of m17-web, which serves the dashboard at
+# /, the setup wizard and the admin pages. The dashboard's event stream
+# (/dashboard/events) stays open: m17-web turns off buffering for it and
+# sends a keepalive every 25 s, inside the read timeout.
+cat > /etc/nginx/http.d/default.conf <<'SITE'
+# m17-hotspot-os: m17-web
+server {
+	listen 80 default_server;
+	listen [::]:80 default_server;
+	server_name _;
+
+	location / {
+		proxy_pass http://127.0.0.1:8090;
+		proxy_set_header Host $host;
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_read_timeout 1h;
 	}
-	{ print }
-	END { if (!done) exit 1 }
-' /etc/nginx/http.d/default.conf > /tmp/default.conf || { echo "no PHP location in the dashboard's nginx site" >&2; exit 1; }
-mv /tmp/default.conf /etc/nginx/http.d/default.conf
-
-# PHP-FPM: run as www-data on localhost, with a PATH that finds the
-# systemctl stand-in in /usr/local/bin. ondemand keeps memory use low.
-POOL=/etc/$PHP/php-fpm.d/www.conf
-sed -i \
-	-e 's/^user = .*/user = www-data/' \
-	-e 's/^group = .*/group = www-data/' \
-	-e 's/^listen = .*/listen = 127.0.0.1:9000/' \
-	-e 's/^pm = .*/pm = ondemand/' \
-	-e 's/^pm.max_children = .*/pm.max_children = 4/' \
-	"$POOL"
-grep -q '^env\[PATH\]' "$POOL" || \
-	echo 'env[PATH] = /usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' >> "$POOL"
-# The dashboard's own login is the protection; keep sessions in /tmp
-sed -i 's|^;*session.save_path = .*|session.save_path = "/tmp"|' /etc/$PHP/php.ini
-
+	# m17-gateway status over MQTT, for browsers (read-only)
+	location = /mqtt {
+		proxy_pass http://127.0.0.1:9001;
+		proxy_http_version 1.1;
+		proxy_set_header Upgrade $http_upgrade;
+		proxy_set_header Connection "upgrade";
+		proxy_read_timeout 1h;
+	}
+}
+SITE
 
 # ── Home directory skeleton ──────────────────────────────────────────
 mkdir -p "/home/$DEFAULT_USER"

@@ -220,13 +220,21 @@ ln -sfn /data/log/m17-gateway/dashboard.log /var/lib/m17-dashboard/files/dashboa
 
 # The dashboard's nginx site, as the default site
 cp /usr/share/rpi-dashboard/nginx-site.conf /etc/nginx/http.d/default.conf
-# The setup wizard (m17-web) at /setup/. ^~ keeps the dashboard's PHP
-# location from matching these paths.
+# m17-web: the setup wizard at /setup/, its admin pages at /admin/. ^~
+# keeps the dashboard's PHP location from matching these paths.
 awk '
 	/^[[:space:]]*location ~ \\\.php\$ \{/ && !done {
 		print "\t# The setup wizard (m17-web)"
 		print "\tlocation = /setup { return 302 /setup/; }"
 		print "\tlocation ^~ /setup/ {"
+		print "\t\tproxy_pass http://127.0.0.1:8090;"
+		print "\t\tproxy_set_header Host $host;"
+		print "\t\tproxy_set_header X-Forwarded-For $remote_addr;"
+		print "\t\tproxy_read_timeout 60s;"
+		print "\t}"
+		print "\t# Its admin pages"
+		print "\tlocation = /admin { return 302 /admin/; }"
+		print "\tlocation ^~ /admin/ {"
 		print "\t\tproxy_pass http://127.0.0.1:8090;"
 		print "\t\tproxy_set_header Host $host;"
 		print "\t\tproxy_set_header X-Forwarded-For $remote_addr;"

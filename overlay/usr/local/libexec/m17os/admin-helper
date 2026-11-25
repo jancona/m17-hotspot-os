@@ -294,9 +294,13 @@ case "${1:-}" in
 		tmp="$WPA_CONF.tmp"
 		wpa_without "$ssid" > "$tmp" || die "reading $WPA_CONF failed"
 		if [ -n "$pass" ]; then
-			# The passphrase on stdin, not the command line
-			printf '%s\n' "$pass" | wpa_passphrase "$ssid" | sed '/^[[:space:]]*#psk=/d' |
-				sed "s/^}/\tpriority=$prio\n}/" >> "$tmp" || { rm -f "$tmp"; die "wpa_passphrase failed"; }
+			# As m17os-config does: wpa_passphrase won't read it from a pipe
+			# (it turns off terminal echo, and fails without a terminal).
+			# Only the derived key is written; the comment with the
+			# passphrase is dropped.
+			wpa_passphrase "$ssid" "$pass" | sed '/^[[:space:]]*#psk=/d' |
+				sed "s/^}/\tpriority=$prio\n}/" >> "$tmp"
+			grep -qF "ssid=\"$ssid\"" "$tmp" || { rm -f "$tmp"; die "wpa_passphrase failed"; }
 		else
 			printf 'network={\n\tssid="%s"\n\tkey_mgmt=NONE\n\tpriority=%s\n}\n' "$ssid" "$prio" >> "$tmp"
 		fi

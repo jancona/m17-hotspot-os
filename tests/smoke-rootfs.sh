@@ -410,7 +410,8 @@ check "wifi-add exit" 0 "$?"
 out=$(as_admin "doas -n $helper wifi-networks" 2>&1)
 echo "$out" | grep -q "open	SmokeOpen$" && ok || fail "wifi-networks after add: $out"
 echo "$out" | grep -q "WizardNet$" && ok || fail "wifi-add dropped another network: $out"
-printf 'ssid=SmokeWPA\npassword=smoke-secret\n' | as_admin "doas -n $helper wifi-add" >/dev/null 2>&1
+out=$(printf 'ssid=SmokeWPA\npassword=smoke-secret\n' | as_admin "doas -n $helper wifi-add" 2>&1)
+check "wifi-add secured exit" 0 "$?"
 grep -q 'smoke-secret' /etc/wpa_supplicant/wpa_supplicant.conf && fail "wifi-add kept the passphrase in clear" || ok
 as_admin "doas -n $helper wifi-networks" 2>&1 | grep -q "secured	SmokeWPA$" && ok || fail "secured network not listed"
 as_admin "doas -n $helper wifi-remove SmokeOpen" >/dev/null 2>&1

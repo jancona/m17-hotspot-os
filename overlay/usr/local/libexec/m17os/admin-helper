@@ -42,11 +42,13 @@
 #   admin-helper ssh-key-remove KEY removes the key whose base64 part is KEY
 #   admin-helper os-status          m17os-slot-info --json, then the last
 #                                   automatic update run as update.KEY=VALUE
-#   admin-helper job-start os-check|os-install|packages
-#                                   runs m17os-upgrade --check or --install,
-#                                   or m17os-autoupdate --packages, in the
-#                                   background; prints started=TIME
-#   admin-helper job-status os-check|os-install|packages
+#   admin-helper job-start check|os-check|os-install|packages
+#                                   runs m17os-autoupdate --check (OS and
+#                                   packages), m17os-upgrade --check or
+#                                   --install, or m17os-autoupdate
+#                                   --packages, in the background; prints
+#                                   started=TIME
+#   admin-helper job-status check|os-check|os-install|packages
 #                                   state=running|ok|failed, exit=, started=,
 #                                   then its output as "log: " lines
 #   admin-helper rollback           switches to the previous slot and reboots
@@ -117,7 +119,7 @@ valid_ssid() {
 # job_paths NAME - the status, log and pid files of background job NAME
 job_paths() {
 	case "$1" in
-		os-check|os-install|packages) ;;
+		check|os-check|os-install|packages) ;;
 		*) die "unknown job: $1" ;;
 	esac
 	jstatus="$RUN/job-$1.status"; jlog="$RUN/job-$1.log"; jpid="$RUN/job-$1.pid"
@@ -345,14 +347,14 @@ case "${1:-}" in
 		exit 0
 		;;
 	job-start)
-		[ $# -eq 2 ] || die "usage: job-start os-check|os-install|packages"
+		[ $# -eq 2 ] || die "usage: job-start check|os-check|os-install|packages"
 		job_paths "$2"
 		mkdir -p "$RUN"
 		pid=$(cat "$jpid" 2>/dev/null)
 		if grep -qx 'state=running' "$jstatus" 2>/dev/null && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
 			die "$2 is already running"
 		fi
-		for other in os-check os-install packages; do
+		for other in check os-check os-install packages; do
 			[ "$other" = "$2" ] && continue
 			opid=$(cat "$RUN/job-$other.pid" 2>/dev/null)
 			grep -qx 'state=running' "$RUN/job-$other.status" 2>/dev/null && [ -n "$opid" ] && kill -0 "$opid" 2>/dev/null &&
@@ -362,6 +364,7 @@ case "${1:-}" in
 			os-check) prog="$UPGRADE" cmd="--check" ;;
 			os-install) prog="$UPGRADE" cmd="--install" ;;
 			packages) prog="$AUTOUPDATE" cmd="--packages" ;;
+			check) prog="$AUTOUPDATE" cmd="--check" ;;
 		esac
 		started=$(date +%s)
 		printf 'state=running\nstarted=%s\n' "$started" > "$jstatus"
@@ -381,7 +384,7 @@ case "${1:-}" in
 		echo "started=$started"
 		;;
 	job-status)
-		[ $# -eq 2 ] || die "usage: job-status os-check|os-install|packages"
+		[ $# -eq 2 ] || die "usage: job-status check|os-check|os-install|packages"
 		job_paths "$2"
 		[ -f "$jstatus" ] || exit 0
 		pid=$(cat "$jpid" 2>/dev/null)

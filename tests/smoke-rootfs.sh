@@ -441,7 +441,11 @@ M17OS_UPGRADE=/tmp/fake-upgrade sh $helper job-start os-check >/dev/null
 for i in 1 2 3 4 5; do sh $helper job-status os-check | grep -qx 'state=running' || break; sleep 1; done
 out=$(sh $helper job-status os-check)
 echo "$out" | grep -qx 'state=ok' && echo "$out" | grep -qx 'exit=1' && echo "$out" | grep -qx 'log: up to date' && ok || fail "os-check job: $out"
-printf '#!/bin/sh\necho "The M17 packages are up to date"\n' > /tmp/fake-autoupdate && chmod +x /tmp/fake-autoupdate
+printf '#!/bin/sh\ncase "$1" in --check) echo OS_CURRENT=true; echo PACKAGES_CURRENT=true ;; *) echo "The M17 packages are up to date" ;; esac\n' > /tmp/fake-autoupdate && chmod +x /tmp/fake-autoupdate
+M17OS_AUTOUPDATE=/tmp/fake-autoupdate sh $helper job-start check >/dev/null
+for i in 1 2 3 4 5; do sh $helper job-status check | grep -qx 'state=running' || break; sleep 1; done
+out=$(sh $helper job-status check)
+echo "$out" | grep -qx 'state=ok' && echo "$out" | grep -qx 'log: PACKAGES_CURRENT=true' && ok || fail "check job: $out"
 M17OS_AUTOUPDATE=/tmp/fake-autoupdate sh $helper job-start packages >/dev/null
 for i in 1 2 3 4 5; do sh $helper job-status packages | grep -qx 'state=running' || break; sleep 1; done
 out=$(sh $helper job-status packages)

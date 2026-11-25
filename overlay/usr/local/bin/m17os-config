@@ -34,7 +34,9 @@ SAVED_DIR="${M17OS_SAVED_DIR:-/data/m17os}"
 SAVED_CONF="$SAVED_DIR/user.conf"
 LIB_DIR="${M17OS_LIB:-/usr/local/lib/m17os}"
 GATEWAY_INI="${M17OS_GATEWAY_INI:-/etc/m17-gateway.ini}"
-DASHBOARD_DIR="${M17OS_DASHBOARD_DIR:-/opt/m17/rpi-dashboard}"
+# The admin password's hash, m17-web's
+ADMIN_PASSWORD="${M17OS_ADMIN_PASSWORD:-/var/lib/m17-web/admin-password}"
+M17_WEB="${M17OS_M17_WEB:-/usr/bin/m17-web}"
 # On /data, not the /var/log tmpfs: processing the file can end in a
 # reboot, and the log is how to find out what happened
 LOG_FILE="$SAVED_DIR/config.log"
@@ -195,6 +197,27 @@ ensure_dashboard_log() {
 	fi
 }
 ensure_dashboard_log
+
+# The admin password moved from rpi-dashboard's settings to m17-web's own
+# file when the image dropped rpi-dashboard (2026-11). Images since then
+# don't mount /var/lib/m17-dashboard, so copy the hash from its copy on
+# /data while m17-web has none.
+OLD_DASHBOARD_CONFIG="${M17OS_OLD_DASHBOARD_CONFIG:-/data/var/lib/m17-dashboard/config.php}"
+ensure_admin_password() {
+	[ -s "$ADMIN_PASSWORD" ] && return 0
+	[ -f "$OLD_DASHBOARD_CONFIG" ] || return 0
+	hash=$(sed -n "s/^[[:space:]]*'admin_password_hash'[[:space:]]*=>[[:space:]]*'\([^']*\)'.*/\1/p" "$OLD_DASHBOARD_CONFIG")
+	[ -n "$hash" ] || return 0
+	set_admin_password_hash "$hash" && log "Admin password carried over from the old dashboard"
+}
+# set_admin_password_hash HASH - write m17-web's admin password file
+set_admin_password_hash() {
+	mkdir -p "${ADMIN_PASSWORD%/*}"
+	(umask 077; printf '%s\n' "$1" > "$ADMIN_PASSWORD.tmp") &&
+		chown m17-web:m17-web "$ADMIN_PASSWORD.tmp" 2>/dev/null
+	mv "$ADMIN_PASSWORD.tmp" "$ADMIN_PASSWORD"
+}
+ensure_admin_password
 
 # ensure_mqtt - m17-gateway sends its status to the local Mosquitto, where
 # m17-web reads it. A gateway configuration from before has no [MQTT]
@@ -479,15 +502,12 @@ while IFS='=' read -r key value; do
 			if $FROM_CONFIG_TXT; then
 				if [ "${#value}" -lt 8 ]; then
 					warn "dashboard_password not set: it must be at least 8 characters (it has ${#value})"
-				elif out=$(printf '%s\n' "$value" | \
-					su -s /bin/sh www-data -c "php84 $DASHBOARD_DIR/set_password.php" 2>&1); then
-					log "Dashboard admin password set"
-					slot_event "config: dashboard admin password set"
+				elif hash=$(printf '%s\n' "$value" | "$M17_WEB" -hash-password 2>/dev/null) &&
+					[ -n "$hash" ] && set_admin_password_hash "$hash"; then
+					log "Admin password set"
+					slot_event "config: admin password set"
 				else
-					# set_password.php reads the password from stdin and never
-					# prints it; drop its prompt from the message
-					why=$(echo "$out" | sed 's/^New dashboard admin password: *//' | tr '\n' ' ')
-					warn "could not set the dashboard password: ${why:-set_password.php failed}"
+					warn "could not set the admin password (m17-web -hash-password failed)"
 				fi
 			fi
 			;;

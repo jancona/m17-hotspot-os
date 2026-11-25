@@ -4,7 +4,7 @@
 # Part of m17-hotspot-os.
 #
 # /var/log is a tmpfs (to spare the SD card), so it starts empty at every
-# boot. Packages such as nginx and php-fpm won't start without their log
+# boot. Packages such as nginx and mosquitto won't start without their log
 # directories, so the build records the directories the root filesystem
 # had in /etc/m17os/var-log-dirs ("mode owner:group path" per line), and
 # this recreates them.

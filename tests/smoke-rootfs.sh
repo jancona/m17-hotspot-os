@@ -40,10 +40,14 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 section "Packages and boot files"
-for p in raspios-kernel-v8 raspios-kernel-2712 raspios-firmware nginx php84-fpm doas minisign avahi stm32flash \
-	m17-gateway m17-gateway-openrc rpi-dashboard m17-firmware-cc1200 m17-firmware-mmdvm-hs \
+for p in raspios-kernel-v8 raspios-kernel-2712 raspios-firmware nginx doas minisign avahi stm32flash \
+	m17-gateway m17-gateway-openrc m17-firmware-cc1200 m17-firmware-mmdvm-hs \
 	m17-firmware-mmdvm m17-sx1255-overlay m17-web m17-web-openrc; do
 	apk info -e "$p" >/dev/null && ok || fail "package $p not installed"
+done
+# m17-web replaced rpi-dashboard, so no PHP
+for p in rpi-dashboard php84 php84-fpm; do
+	apk info -e "$p" >/dev/null && fail "package $p installed" || ok
 done
 for f in kernel8.img kernel_2712.img cmdline.txt overlays/genericstereoaudiocodec.dtbo; do
 	[ -e "/boot/firmware/$f" ] && ok || fail "/boot/firmware/$f missing"
@@ -57,7 +61,7 @@ section "Services"
 for s in m17os-data-resize m17os-varlog m17os-clock m17os-bindmounts m17os-config m17os-boot-watchdog wpa_supplicant dhcpcd; do
 	[ -L "/etc/runlevels/boot/$s" ] && ok || fail "$s not in boot runlevel"
 done
-for s in dropbear crond ntpd avahi-daemon php-fpm84 nginx m17-gateway m17os-health-check; do
+for s in dropbear crond ntpd avahi-daemon nginx m17-gateway m17-web m17os-health-check; do
 	[ -L "/etc/runlevels/default/$s" ] && ok || fail "$s not in default runlevel"
 done
 
@@ -79,7 +83,6 @@ section "Users and permissions"
 id m17 | grep -q wheel && ok || fail "m17 not in wheel"
 id m17-gateway | grep -q dialout && id m17-gateway | grep -q spi && id m17-gateway | grep -q gpio && ok || \
 	fail "m17-gateway groups: $(id m17-gateway)"
-id www-data | grep -q m17-gateway-control && ok || fail "www-data not in m17-gateway-control"
 grep -q '^root:!' /etc/shadow && ok || fail "root not locked"
 grep -q 'ttyAMA\[0-9\]\*.*root:dialout' /etc/mdev.conf && ok || fail "mdev rule for ttyAMA missing"
 
@@ -89,39 +92,30 @@ grep -qi 'config' /tmp/gw-help && ok || fail "m17-gateway -h: $(head -3 /tmp/gw-
 check "ini symlink" "m17-gateway/m17-gateway.ini" "$(readlink /etc/m17-gateway.ini)"
 . /usr/local/lib/m17os/ini.sh
 check "DashboardLog" /data/log/m17-gateway/dashboard.log "$(ini_get /etc/m17-gateway.ini General DashboardLog)"
-check "dashboard log link" /data/log/m17-gateway/dashboard.log "$(readlink /var/lib/m17-dashboard/files/dashboard.log)"
 check "HostFile" /var/lib/m17-gateway/M17Hosts.txt "$(ini_get /etc/m17-gateway.ini Reflector HostFile)"
 grep -q "$M17_APK_REPO/v$ALPINE_VERSION/m17" /etc/apk/repositories && ok || fail "m17-apk repository not configured"
 [ -f /usr/share/m17-firmware/mmdvm_hs/MMDVM_HS_Dual_Hat.bin ] && ok || fail "MMDVM_HS firmware missing"
-su -s /bin/sh www-data -c 'test -w /var/lib/m17-gateway/M17Hosts.txt' && ok || fail "www-data cannot update the host file"
 check "Log level" INFO "$(ini_get /etc/m17-gateway.ini Log Level)"
-[ -s /opt/m17/rpi-dashboard/files/M17Hosts.txt ] && ok || fail "host file not reachable through the dashboard"
-su -s /bin/sh www-data -c 'test -w /etc/m17-gateway.ini' && ok || fail "www-data cannot write the gateway ini"
-su -s /bin/sh www-data -c 'test -w /opt/m17/rpi-dashboard/index.php' && fail "www-data can write dashboard code" || ok
+su -s /bin/sh www-data -c 'test -w /etc/m17-gateway.ini' && fail "www-data can write the gateway ini" || ok
 
-section "Web dashboard (nginx + php-fpm)"
+section "Web server (nginx in front of m17-web)"
 nginx -t 2>/tmp/nginx-t && ok || fail "nginx -t: $(cat /tmp/nginx-t)"
-php-fpm84 -t 2>/tmp/fpm-t && ok || fail "php-fpm84 -t: $(cat /tmp/fpm-t)"
+grep -q 'proxy_pass http://127.0.0.1:8090;' /etc/nginx/http.d/default.conf && ok || fail "nginx doesn't send pages to m17-web"
+grep -q 'php' /etc/nginx/http.d/default.conf && fail "the nginx site still has PHP" || ok
 mkdir -p /var/log/m17-gateway /run/nginx
 chown m17-gateway:m17-gateway /var/log/m17-gateway
-php-fpm84 -D && nginx && sleep 1
-wget -q -O /tmp/index.html http://127.0.0.1/index.php && ok || fail "dashboard index.php did not load"
-grep -qi 'm17' /tmp/index.html && ok || fail "index.php does not look like the dashboard"
-wget -q -O /dev/null http://127.0.0.1/files/M17Hosts.txt && fail "files/ is served" || ok
-wget -q -O /dev/null http://127.0.0.1/config.php && fail "config.php is served" || ok
-grep -q "admin_password_hash" /var/lib/m17-dashboard/config.php && ok || fail "dashboard did not write its config.php"
-[ -L /opt/m17/rpi-dashboard/config.php ] && ok || fail "config.php symlink was replaced"
-/etc/m17os/health.d/60-dashboard >/dev/null 2>&1; check "dashboard health hook" 0 "$?"
+nginx && sleep 1
+# m17-web isn't running yet: nginx answers for it (502)
+wget -S -O /dev/null http://127.0.0.1/ 2>&1 | grep -q 'HTTP/1.1 502' && ok || fail "nginx doesn't answer"
+[ -e /etc/m17os/health.d/60-dashboard ] && fail "the old dashboard health hook is still there" || ok
 
-section "systemctl stand-in (as www-data, through doas)"
-out=$(su -s /bin/sh www-data -c 'PATH=/usr/local/bin:/usr/bin:/bin; systemctl bogus 2>&1'); rc=$?
-check "unsupported action fails" 1 "$rc"
-out=$(su -s /bin/sh www-data -c 'PATH=/usr/local/bin:/usr/bin:/bin; systemctl restart nginx.service 2>&1'); rc=$?
-check "other units refused" 1 "$rc"
+section "No dashboard helpers for www-data"
+for f in /usr/local/bin/systemctl /usr/local/libexec/m17os/service-control; do
+	[ -e "$f" ] && fail "$f is still there" || ok
+done
 out=$(su -s /bin/sh www-data -c 'doas -n /bin/sh -c id 2>&1'); rc=$?
-[ "$rc" -ne 0 ] && ok || fail "www-data can run arbitrary commands through doas: $out"
-out=$(su -s /bin/sh www-data -c 'doas -n /usr/local/libexec/m17os/service-control bogus 2>&1'); rc=$?
-case "$out" in *"not allowed"*) ok ;; *) fail "doas rule for service-control: $out" ;; esac
+[ "$rc" -ne 0 ] && ok || fail "www-data can run commands through doas: $out"
+grep -q www-data /etc/doas.d/m17os.conf && fail "doas still has a www-data rule" || ok
 check "doas.d permissions" 600 "$(stat -c %a /etc/doas.d/m17os.conf)"
 
 section "m17os-config (boot configuration file)"
@@ -173,19 +167,20 @@ check "module" B "$(ini_get /etc/m17-gateway.ini Reflector Module)"
 check "modem type" cc1200 "$(ini_get /etc/m17-gateway.ini Modem Type)"
 check "ini still a symlink" "m17-gateway/m17-gateway.ini" "$(readlink /etc/m17-gateway.ini)"
 check "ini owner" "m17-gateway:m17-gateway-control" "$(stat -c %U:%G /etc/m17-gateway/m17-gateway.ini)"
-grep -q "admin_password_hash' => '[$]" /var/lib/m17-dashboard/config.php && ok || \
-	fail "dashboard password not set: $(grep -i password /tmp/config.log)"
+grep -q '^[$]2' /var/lib/m17-web/admin-password && ok || \
+	fail "admin password not set: $(grep -i password /tmp/config.log)"
+check "admin password file" "m17-web:600" "$(stat -c %U:%a /var/lib/m17-web/admin-password)"
 grep -q '^user_password_hash=\$' /data/m17os/user.conf && ok || fail "password hash not saved"
 check "user.conf mode" 600 "$(stat -c %a /data/m17os/user.conf)"
 grep -q 'secret-pass\|homepassword\|dashpass123' /data/m17os/user.conf /data/m17os/config.log && \
 	fail "a plaintext password was saved or logged" || ok
 
 section "m17os-config: problems are reported, passwords are not"
-before=$(grep "admin_password_hash" /var/lib/m17-dashboard/config.php)
+before=$(cat /var/lib/m17-web/admin-password)
 printf 'dashboard_password=short7\ndashbord_password=misspelled-secret\ncallsign=bad*call\nrf_level=150\n' > /boot/firmware/m17-config.txt
 sh /usr/local/bin/m17os-config > /tmp/warn.log 2>&1
 check "warnings exit" 0 "$?"
-check "short password left the old one" "$before" "$(grep "admin_password_hash" /var/lib/m17-dashboard/config.php)"
+check "short password left the old one" "$before" "$(cat /var/lib/m17-web/admin-password)"
 grep -q 'config: dashboard_password not set: it must be at least 8 characters (it has 6)' /data/log/m17os-events.log && ok || \
 	fail "short password not in the event log: $(tail -3 /data/log/m17os-events.log)"
 grep -q "config: unknown setting 'dashbord_password'" /data/log/m17os-events.log && ok || fail "unknown key not reported"
@@ -228,24 +223,23 @@ check "changed hash saved" "$(sed -n 's/^m17:\([^:]*\):.*/\1/p' /etc/shadow)" "$
 
 section "Boot with an empty /var/log (it is a tmpfs on the Pi)"
 grep -q ' /var/log/nginx$' /etc/m17os/var-log-dirs && ok || fail "var-log-dirs has no /var/log/nginx"
-grep -q ' /var/log/php84$' /etc/m17os/var-log-dirs && ok || fail "var-log-dirs has no /var/log/php84"
 [ -L /etc/runlevels/boot/m17os-varlog ] && ok || fail "m17os-varlog not in boot runlevel"
-nginx -s stop 2>/dev/null; pkill php-fpm84 2>/dev/null; sleep 1
+nginx -s stop 2>/dev/null; sleep 1
 mv /var/log /var/log.saved && mkdir /var/log
 nginx -t >/dev/null 2>&1 && fail "nginx -t passes without /var/log/nginx: the test can't show the fix" || ok
 ( ebegin() { :; }; eend() { return "${1:-0}"; }; . /etc/init.d/m17os-varlog; start ) \
 	&& ok || fail "m17os-varlog start failed"
 check "nginx log dir owner" "$(awk '$3 == "/var/log/nginx" { print $2 }' /etc/m17os/var-log-dirs)" "$(stat -c %U:%G /var/log/nginx)"
 nginx -t 2>/tmp/nginx-t2 && ok || fail "nginx -t after m17os-varlog: $(cat /tmp/nginx-t2)"
-php-fpm84 -t 2>/tmp/fpm-t2 && ok || fail "php-fpm84 -t after m17os-varlog: $(cat /tmp/fpm-t2)"
 mkdir -p /run/nginx
-php-fpm84 -D && nginx && sleep 1
-wget -q -O /dev/null http://127.0.0.1/index.php && ok || fail "dashboard did not load after m17os-varlog"
+nginx && sleep 1
+wget -S -O /dev/null http://127.0.0.1/ 2>&1 | grep -q 'HTTP/1.1 502' && ok || fail "nginx didn't start after m17os-varlog"
 rm -rf /var/log && mv /var/log.saved /var/log
 
 section "Migration from the pre-package layout"
 # Older images: real host files in the dashboard's files/, gateway pointed there
 D=/var/lib/m17-dashboard/files
+mkdir -p "$D"
 rm -f "$D/M17Hosts.txt" "$D/OverrideHosts.txt"
 echo "M17-OLD 192.0.2.1 17000" > "$D/M17Hosts.txt"
 echo "M17-MINE 192.0.2.2 17000" > "$D/OverrideHosts.txt"
@@ -257,12 +251,26 @@ sh /usr/local/bin/m17os-config > /tmp/migrate.log 2>&1
 check "migration exit" 0 "$?"
 [ -L "$D/OverrideHosts.txt" ] && [ -L "$D/M17Hosts.txt" ] && ok || fail "dashboard host files not replaced by symlinks"
 grep -q 'M17-MINE' /var/lib/m17-gateway/OverrideHosts.txt && ok || fail "user's OverrideHosts.txt not kept"
-grep -q 'M17-MINE' /opt/m17/rpi-dashboard/files/OverrideHosts.txt && ok || fail "dashboard doesn't see the override file"
 check "HostFile migrated" /var/lib/m17-gateway/M17Hosts.txt "$(ini_get /etc/m17-gateway.ini Reflector HostFile)"
 check "OverrideHostFile migrated" /var/lib/m17-gateway/OverrideHosts.txt "$(ini_get /etc/m17-gateway.ini Reflector OverrideHostFile)"
 check "migrated owner" "m17-gateway:m17-gateway-control" "$(stat -c %U:%G /var/lib/m17-gateway/OverrideHosts.txt)"
 sh /usr/local/bin/m17os-config > /tmp/migrate2.log 2>&1
 grep -q 'Moved' /tmp/migrate2.log && fail "migration ran a second time" || ok
+
+section "The admin password moves from the old dashboard"
+# An older hotspot: rpi-dashboard's config.php on /data, no m17-web file
+pw_before=$(cat /var/lib/m17-web/admin-password)
+mv /var/lib/m17-web/admin-password /tmp/admin-password.saved
+mkdir -p /data/var/lib/m17-dashboard
+printf "<?php\nreturn array (\n  'maxlines' => '15',\n  'admin_password_hash' => '%s',\n);\n" '$2y$10$abcdefghijklmnopqrstuuJ8Dr0bR0d9Tz4mWb3jKXGQkQ5sY2xS1a' > /data/var/lib/m17-dashboard/config.php
+sh /usr/local/bin/m17os-config > /tmp/pwmove.log 2>&1
+check "old password carried over" '$2y$10$abcdefghijklmnopqrstuuJ8Dr0bR0d9Tz4mWb3jKXGQkQ5sY2xS1a' "$(cat /var/lib/m17-web/admin-password)"
+check "carried-over password file" "m17-web:600" "$(stat -c %U:%a /var/lib/m17-web/admin-password)"
+# Only while m17-web has none: a password set since wins
+echo "$pw_before" > /var/lib/m17-web/admin-password
+sh /usr/local/bin/m17os-config > /tmp/pwmove2.log 2>&1
+check "newer password kept" "$pw_before" "$(cat /var/lib/m17-web/admin-password)"
+rm -rf /data/var/lib/m17-dashboard /tmp/admin-password.saved
 
 section "Dashboard log on /data, and moving older hotspots there"
 # The first m17os-config runs above created the directory
@@ -282,7 +290,7 @@ sh /usr/local/bin/m17os-config > /tmp/dashlog2.log 2>&1
 check "custom DashboardLog kept" /home/m17/my-dashboard.log "$(ini_get /etc/m17-gateway.ini General DashboardLog)"
 ini_set /etc/m17-gateway.ini General DashboardLog /data/log/m17-gateway/dashboard.log
 
-section "Running gateway is found (dashboard status, health hook)"
+section "Running gateway is found (health hook)"
 socat pty,link=/tmp/ttyV0,raw,mode=666 pty,link=/tmp/ttyV1,raw & SOCAT=$!
 sleep 1
 chmod 666 "$(readlink -f /tmp/ttyV0)"
@@ -294,10 +302,7 @@ GW=$!
 sleep 2
 kill -0 "$GW" 2>/dev/null && ok || fail "test gateway exited: $(tail -2 /tmp/gw-test.log)"
 check "pgrep is procps" /usr/bin/pgrep "$(readlink -f "$(command -v pgrep)")"
-su -s /bin/sh www-data -c 'pgrep -x m17-gateway' >/dev/null && ok || fail "pgrep -x (as the dashboard) does not find the gateway"
 pidof m17-gateway >/dev/null && ok || fail "pidof does not find the gateway"
-wget -q -O /tmp/status.json http://127.0.0.1/get_status.php && ok || fail "get_status.php failed"
-grep -q '"gateway_status":"Running"' /tmp/status.json && ok || fail "dashboard status: $(head -c 200 /tmp/status.json)"
 kill "$GW" "$SOCAT" 2>/dev/null
 
 section "Signed releases (m17os-upgrade --check)"
@@ -531,20 +536,23 @@ section "Setup wizard (m17-web) behind nginx"
 [ -L /etc/runlevels/default/m17-web ] && ok || fail "m17-web not in the default runlevel"
 check "m17-web state dir" "m17-web:700" "$(stat -c %U:%a /var/lib/m17-web)"
 id m17-web | grep -q dialout && ok || fail "m17-web can't open the serial port: $(id m17-web)"
-grep -q 'location \^~ /setup/' /etc/nginx/http.d/default.conf && ok || fail "no /setup/ location in the nginx site"
-grep -q 'location \^~ /admin/' /etc/nginx/http.d/default.conf && ok || fail "no /admin/ location in the nginx site"
-grep -q 'location \^~ /dashboard/' /etc/nginx/http.d/default.conf && ok || fail "no /dashboard/ location in the nginx site"
-nginx -t 2>/dev/null && ok || fail "nginx -t with the /setup/ location"
+nginx -t 2>/dev/null && ok || fail "nginx -t"
 nginx -s reload 2>/dev/null || nginx
 su -s /bin/sh m17-web -c '/usr/bin/m17-web -listen 127.0.0.1:8090 -state-dir /var/lib/m17-web >/tmp/m17-web.log 2>&1 &'
 for i in 1 2 3 4 5 6 7 8 9 10; do wget -q -O /dev/null http://127.0.0.1:8090/setup/static/style.css 2>/dev/null && break; sleep 1; done
 wget -q -O /tmp/setup.html http://127.0.0.1/setup/ && ok || fail "GET /setup/ through nginx: $(tail -3 /tmp/m17-web.log)"
-# A dashboard password was set above, so the wizard asks for it
+# An admin password was set above, so the wizard asks for it
 grep -q 'Admin password' /tmp/setup.html && grep -q '/setup/login' /tmp/setup.html && ok || \
 	fail "the wizard's login page didn't come through nginx: $(head -c 300 /tmp/setup.html)"
 wget -q -O /tmp/setup.css http://127.0.0.1/setup/static/style.css && grep -q 'prefers-color-scheme' /tmp/setup.css && ok || \
 	fail "the wizard's stylesheet didn't come through nginx"
-wget -q -O /dev/null http://127.0.0.1/index.php && ok || fail "the dashboard stopped working with the /setup/ location"
+# The dashboard is the front page, and rpi-dashboard's addresses lead to it
+loc=$(wget -S -O /dev/null http://127.0.0.1/ 2>&1 | sed -n 's/^ *Location: //p' | head -1 | tr -d '\r')
+check "front page" "/dashboard/" "$loc"
+wget -q -O /tmp/dash.html http://127.0.0.1/dashboard/ && grep -q 'M17 hotspot' /tmp/dash.html && ok || fail "the dashboard didn't come through nginx"
+loc=$(wget -S -O /dev/null http://127.0.0.1/index.php 2>&1 | sed -n 's/^ *Location: //p' | head -1 | tr -d '\r')
+check "old dashboard address" "/dashboard/" "$loc"
+/etc/m17os/health.d/60-web >/dev/null 2>&1; check "web pages health hook" 0 "$?"
 
 section "Setup access point (m17os-netwatch)"
 for p in hostapd dnsmasq; do apk info -e "$p" >/dev/null && ok || fail "$p not installed"; done

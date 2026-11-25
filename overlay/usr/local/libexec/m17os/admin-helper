@@ -24,6 +24,32 @@
 #                                   "log: " lines (nothing if none ran)
 #   admin-helper gateway stop|start|status
 #   admin-helper reboot
+#   admin-helper shutdown
+#
+# For the admin pages:
+#
+#   admin-helper wifi-networks      the saved networks, never passwords:
+#                                   priority<TAB>open|secured<TAB>ssid
+#   admin-helper wifi-status        the connection now: ssid=, freq=,
+#                                   signal= (dBm), ip_address= (if any)
+#   admin-helper wifi-add           ssid= and password= lines on stdin (no
+#                                   password: an open network); adds the
+#                                   network, or replaces one of that name,
+#                                   keeping the others, and reconnects
+#   admin-helper wifi-remove SSID   removes a saved network and reconnects
+#   admin-helper ssh-keys           the m17 user's public keys:
+#                                   type<TAB>key<TAB>comment
+#   admin-helper ssh-key-remove KEY removes the key whose base64 part is KEY
+#   admin-helper os-status          m17os-slot-info --json, then the last
+#                                   automatic update run as update.KEY=VALUE
+#   admin-helper job-start os-check|os-install
+#                                   runs m17os-upgrade --check or --install
+#                                   in the background; prints started=TIME
+#   admin-helper job-status os-check|os-install
+#                                   state=running|ok|failed, exit=, started=,
+#                                   then its output as "log: " lines
+#   admin-helper rollback           switches to the previous slot and reboots
+#   admin-helper syslog             the last 300 lines of the system log
 
 PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WPA_CONF="${M17OS_WPA_CONF:-/etc/wpa_supplicant/wpa_supplicant.conf}"
@@ -34,6 +60,11 @@ RUN="${M17OS_RUN:-/run/m17os}"
 DROPBEAR_CONF="${M17OS_DROPBEAR_CONF:-/etc/conf.d/dropbear}"
 AUTHORIZED_KEYS="${M17OS_AUTHORIZED_KEYS:-/home/m17/.ssh/authorized_keys}"
 FIRMWARE="${M17OS_FIRMWARE:-/usr/local/bin/m17os-firmware}"
+UPGRADE="${M17OS_UPGRADE:-/usr/local/bin/m17os-upgrade}"
+ROLLBACK="${M17OS_ROLLBACK:-/usr/local/bin/m17os-rollback}"
+SLOT_INFO="${M17OS_SLOT_INFO:-/usr/local/bin/m17os-slot-info}"
+AUTOUPDATE_STATUS="${M17OS_STATE_DIR:-/var/lib/m17os}/autoupdate.status"
+SYSLOG="${M17OS_SYSLOG:-/var/log/messages}"
 # How long the caller's web response gets before a reconnect or reboot
 DELAY="${M17OS_ACTION_DELAY:-5}"
 
@@ -43,6 +74,51 @@ die() { echo "admin-helper: $*" >&2; exit 2; }
 # detached from the caller
 later() {
 	( sleep "$DELAY"; "$@" ) </dev/null >/dev/null 2>&1 &
+}
+
+# reconnect_wifi - make wpa_supplicant reread its configuration, after the
+# caller's response has gone (the change may cut the connection it's on)
+reconnect_wifi() {
+	if [ "$(cat "$RUN/mode" 2>/dev/null)" = ap ]; then
+		later touch "$RUN/request-join"
+	else
+		later sh -c "wpa_cli -i '$IFACE' reconfigure || rc-service wpa_supplicant restart"
+	fi
+}
+
+# wpa_without SSID - the WiFi configuration on stdout without the network
+# blocks named SSID (taken from the environment, so awk doesn't read
+# backslash escapes in it)
+wpa_without() {
+	DROP_SSID="$1" awk '
+		/^[[:space:]]*network=\{/ { inblock = 1; block = $0 "\n"; drop = 0; next }
+		inblock {
+			block = block $0 "\n"
+			line = $0
+			sub(/^[[:space:]]*/, "", line); sub(/[[:space:]]*$/, "", line)
+			if (line == "ssid=\"" ENVIRON["DROP_SSID"] "\"") drop = 1
+			if (line == "}") { inblock = 0; if (!drop) printf "%s", block }
+			next
+		}
+		{ print }
+	' "$WPA_CONF"
+}
+
+# valid_ssid SSID - 1 to 32 bytes, no quote, backslash or control character
+# (they would need escaping in wpa_supplicant.conf)
+valid_ssid() {
+	[ -n "$1" ] && [ "${#1}" -le 32 ] || return 1
+	case "$1" in *[\"\\]*) return 1 ;; esac
+	! printf '%s' "$1" | LC_ALL=C grep -q '[[:cntrl:]]'
+}
+
+# job_paths NAME - the status, log and pid files of background job NAME
+job_paths() {
+	case "$1" in
+		os-check|os-install) ;;
+		*) die "unknown job: $1" ;;
+	esac
+	jstatus="$RUN/job-$1.status"; jlog="$RUN/job-$1.log"; jpid="$RUN/job-$1.pid"
 }
 
 case "${1:-}" in
@@ -160,6 +236,165 @@ case "${1:-}" in
 		fi
 		# stm32flash rewrites its progress line with carriage returns
 		tr '\r' '\n' < "$RUN/firmware.log" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 20 | sed 's/^/log: /'
+		exit 0
+		;;
+	shutdown)
+		[ $# -eq 1 ] || die "shutdown takes no arguments"
+		later poweroff
+		echo "shutting down"
+		;;
+	wifi-networks)
+		[ $# -eq 1 ] || die "wifi-networks takes no arguments"
+		[ -f "$WPA_CONF" ] || exit 0
+		awk '
+			/^[[:space:]]*network=\{/ { inblock = 1; ssid = ""; prio = 0; open = 0; next }
+			inblock {
+				line = $0
+				sub(/^[[:space:]]*/, "", line); sub(/[[:space:]]*$/, "", line)
+				if (line ~ /^ssid="/) { ssid = substr(line, 7, length(line) - 7) }
+				else if (line ~ /^priority=/) { prio = substr(line, 10) + 0 }
+				else if (line == "key_mgmt=NONE") { open = 1 }
+				else if (line == "}") {
+					inblock = 0
+					if (ssid != "") printf "%d\t%s\t%s\n", prio, (open ? "open" : "secured"), ssid
+				}
+			}
+		' "$WPA_CONF" | sort -t "$(printf '\t')" -k1,1nr
+		;;
+	wifi-status)
+		[ $# -eq 1 ] || die "wifi-status takes no arguments"
+		wpa_cli -i "$IFACE" status 2>/dev/null | grep -E '^(ssid|freq|ip_address|wpa_state)='
+		wpa_cli -i "$IFACE" signal_poll 2>/dev/null | sed -n 's/^RSSI=/signal=/p'
+		exit 0
+		;;
+	wifi-add)
+		[ $# -eq 1 ] || die "wifi-add takes no arguments (ssid= and password= on stdin)"
+		ssid=""; pass=""
+		while IFS= read -r line || [ -n "$line" ]; do
+			case "$line" in
+				ssid=*) ssid=${line#ssid=} ;;
+				password=*) pass=${line#password=} ;;
+			esac
+		done
+		valid_ssid "$ssid" || die "a network name is 1 to 32 characters, without quotes or backslashes"
+		if [ -n "$pass" ]; then
+			n=${#pass}
+			if ! { [ "$n" -eq 64 ] && printf '%s' "$pass" | grep -qE '^[0-9a-fA-F]+$'; } && { [ "$n" -lt 8 ] || [ "$n" -gt 63 ]; }; then
+				die "a WPA password is 8 to 63 characters"
+			fi
+		fi
+		umask 077
+		if [ ! -f "$WPA_CONF" ]; then
+			mkdir -p "$(dirname "$WPA_CONF")"
+			printf 'ctrl_interface=/var/run/wpa_supplicant\nctrl_interface_group=0\nupdate_config=1\ncountry=US\n' > "$WPA_CONF"
+		fi
+		# The newest network is tried first
+		top=$(sed -n 's/^[[:space:]]*priority=\([0-9]*\)[[:space:]]*$/\1/p' "$WPA_CONF" | sort -n | tail -1)
+		prio=$(( ${top:-0} + 1 ))
+		tmp="$WPA_CONF.tmp"
+		wpa_without "$ssid" > "$tmp" || die "reading $WPA_CONF failed"
+		if [ -n "$pass" ]; then
+			# The passphrase on stdin, not the command line
+			printf '%s\n' "$pass" | wpa_passphrase "$ssid" | sed '/^[[:space:]]*#psk=/d' |
+				sed "s/^}/\tpriority=$prio\n}/" >> "$tmp" || { rm -f "$tmp"; die "wpa_passphrase failed"; }
+		else
+			printf 'network={\n\tssid="%s"\n\tkey_mgmt=NONE\n\tpriority=%s\n}\n' "$ssid" "$prio" >> "$tmp"
+		fi
+		mv "$tmp" "$WPA_CONF"
+		reconnect_wifi
+		echo "network: true"
+		;;
+	wifi-remove)
+		[ $# -eq 2 ] || die "usage: wifi-remove SSID"
+		valid_ssid "$2" || die "not a network name: $2"
+		[ -f "$WPA_CONF" ] || die "no WiFi networks are saved"
+		grep -qF "ssid=\"$2\"" "$WPA_CONF" || die "no saved network named $2"
+		umask 077
+		wpa_without "$2" > "$WPA_CONF.tmp" && mv "$WPA_CONF.tmp" "$WPA_CONF" || die "rewriting $WPA_CONF failed"
+		reconnect_wifi
+		echo "network: true"
+		;;
+	ssh-keys)
+		[ $# -eq 1 ] || die "ssh-keys takes no arguments"
+		[ -f "$AUTHORIZED_KEYS" ] || exit 0
+		# type, key and comment; options before the type aren't used here
+		awk '$1 ~ /^(ssh-|ecdsa-|sk-)/ { c = ""; for (i = 3; i <= NF; i++) c = c (i > 3 ? " " : "") $i; printf "%s\t%s\t%s\n", $1, $2, c }' "$AUTHORIZED_KEYS"
+		;;
+	ssh-key-remove)
+		[ $# -eq 2 ] || die "usage: ssh-key-remove KEY"
+		printf '%s' "$2" | grep -qE '^[A-Za-z0-9+/]+={0,3}$' || die "not a key: $2"
+		[ -f "$AUTHORIZED_KEYS" ] || die "no keys"
+		KEY="$2" awk '$2 == ENVIRON["KEY"] { found = 1 } END { exit !found }' "$AUTHORIZED_KEYS" || die "no such key"
+		tmp="$AUTHORIZED_KEYS.tmp"
+		owner=$(stat -c %u:%g "$AUTHORIZED_KEYS")
+		umask 077
+		KEY="$2" awk '$2 != ENVIRON["KEY"]' "$AUTHORIZED_KEYS" > "$tmp" || die "rewriting the keys failed"
+		chown "$owner" "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$AUTHORIZED_KEYS" || die "rewriting the keys failed"
+		echo "removed"
+		;;
+	os-status)
+		[ $# -eq 1 ] || die "os-status takes no arguments"
+		"$SLOT_INFO" --json 2>/dev/null || echo "{}"
+		[ -r "$AUTOUPDATE_STATUS" ] && grep -E '^[A-Z_]+=' "$AUTOUPDATE_STATUS" | sed 's/^/update./'
+		exit 0
+		;;
+	job-start)
+		[ $# -eq 2 ] || die "usage: job-start os-check|os-install"
+		job_paths "$2"
+		mkdir -p "$RUN"
+		pid=$(cat "$jpid" 2>/dev/null)
+		if grep -qx 'state=running' "$jstatus" 2>/dev/null && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			die "$2 is already running"
+		fi
+		for other in os-check os-install; do
+			[ "$other" = "$2" ] && continue
+			opid=$(cat "$RUN/job-$other.pid" 2>/dev/null)
+			grep -qx 'state=running' "$RUN/job-$other.status" 2>/dev/null && [ -n "$opid" ] && kill -0 "$opid" 2>/dev/null &&
+				die "$other is running"
+		done
+		case "$2" in
+			os-check) cmd="--check" ;;
+			os-install) cmd="--install" ;;
+		esac
+		started=$(date +%s)
+		printf 'state=running\nstarted=%s\n' "$started" > "$jstatus"
+		: > "$jlog"
+		(
+			"$UPGRADE" "$cmd" > "$jlog" 2>&1
+			rc=$?
+			# m17os-upgrade --check: 0 = available, 1 = up to date, 2 = error
+			state=ok
+			[ "$rc" -ge 2 ] && state=failed
+			[ "$cmd" = "--install" ] && [ "$rc" -ne 0 ] && state=failed
+			printf 'state=%s\nexit=%s\nstarted=%s\n' "$state" "$rc" "$started" > "$jstatus.tmp"
+			mv "$jstatus.tmp" "$jstatus"
+		) </dev/null >/dev/null 2>&1 &
+		echo "$!" > "$jpid"
+		echo "started=$started"
+		;;
+	job-status)
+		[ $# -eq 2 ] || die "usage: job-status os-check|os-install"
+		job_paths "$2"
+		[ -f "$jstatus" ] || exit 0
+		pid=$(cat "$jpid" 2>/dev/null)
+		if grep -qx 'state=running' "$jstatus" && ! { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }; then
+			echo "state=failed"
+			grep -E '^started=' "$jstatus"
+		else
+			grep -E '^(state|exit|started)=' "$jstatus"
+		fi
+		tr '\r' '\n' < "$jlog" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 30 | sed 's/^/log: /'
+		exit 0
+		;;
+	rollback)
+		[ $# -eq 1 ] || die "rollback takes no arguments"
+		"$ROLLBACK" || die "rollback failed"
+		later reboot
+		echo "rebooting"
+		;;
+	syslog)
+		[ $# -eq 1 ] || die "syslog takes no arguments"
+		tail -n 300 "$SYSLOG" 2>/dev/null
 		exit 0
 		;;
 	gateway)

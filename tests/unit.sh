@@ -270,6 +270,20 @@ if [ "$(id -u)" -eq 0 ]; then
 	check "nothing to do" 0 "$(au --now)"
 	check "nothing result" current "$(result)"
 
+	# --packages (the admin pages' Update now): packages only, never an OS
+	# release, even when one is available, so never a reboot
+	touch "$AU/os-available" "$AU/pkg-available"
+	check "--packages" 0 "$(au --packages)"
+	check "--packages: no OS check" "" "$(calls upgrade)"
+	check "--packages: no reboot" "" "$(calls reboot)"
+	case "$(calls apk)" in *"upgrade -q m17-gateway"*) ok ;; *) fail "--packages didn't upgrade: $(calls apk)" ;; esac
+	check "--packages result" updated "$(result)"
+	rm -f "$AU/pkg-available"
+	au --packages >/dev/null
+	grep -qx 'The M17 packages are up to date' "$AU/out" && ok || fail "--packages up to date: $(cat "$AU/out")"
+	grep -q 'Everything is up to date' "$AU/out" && fail "--packages claims the OS is up to date" || ok
+	rm -f "$AU/os-available"
+
 	# A clock before the build date: skip
 	printf 'Build Date: 2999-01-01\n' > "$AU/release"
 	check "clock wrong" 0 "$(au --now)"

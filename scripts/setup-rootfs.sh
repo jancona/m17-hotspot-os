@@ -239,8 +239,9 @@ EOF
 
 # The dashboard's nginx site, as the default site
 cp /usr/share/rpi-dashboard/nginx-site.conf /etc/nginx/http.d/default.conf
-# m17-web: the setup wizard at /setup/, its admin pages at /admin/. ^~
-# keeps the dashboard's PHP location from matching these paths.
+# m17-web: the setup wizard at /setup/, its admin pages at /admin/, its
+# dashboard at /dashboard/ (rpi-dashboard stays at /). ^~
+# keeps rpi-dashboard's PHP location from matching these paths.
 awk '
 	/^[[:space:]]*location ~ \\\.php\$ \{/ && !done {
 		print "\t# The setup wizard (m17-web)"
@@ -258,6 +259,16 @@ awk '
 		print "\t\tproxy_set_header Host $host;"
 		print "\t\tproxy_set_header X-Forwarded-For $remote_addr;"
 		print "\t\tproxy_read_timeout 60s;"
+		print "\t}"
+		print "\t# Its public dashboard. /dashboard/events is a Server-Sent"
+		print "\t# Events stream: m17-web turns off buffering for it, and a"
+		print "\t# keepalive every 25 s keeps it inside the read timeout"
+		print "\tlocation = /dashboard { return 302 /dashboard/; }"
+		print "\tlocation ^~ /dashboard/ {"
+		print "\t\tproxy_pass http://127.0.0.1:8090;"
+		print "\t\tproxy_set_header Host $host;"
+		print "\t\tproxy_set_header X-Forwarded-For $remote_addr;"
+		print "\t\tproxy_read_timeout 1h;"
 		print "\t}"
 		print "\t# m17-gateway status over MQTT, for browsers (read-only)"
 		print "\tlocation = /mqtt {"

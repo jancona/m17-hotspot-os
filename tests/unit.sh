@@ -636,6 +636,12 @@ printf 'state=running\nfile=x.bin\nstarted=1\n' > "$HR/firmware.status"
 echo 999999 > "$HR/firmware.pid"
 helper firmware-status | grep -qx 'state=failed' && ok || fail "dead flash job shown running"
 
+# admin-helper gateway: only the rc-service actions it lists (2 is its
+# refusal; past it, rc-service runs, and here fails some other way)
+helper gateway reload >/dev/null 2>&1; check "gateway reload refused" 2 "$?"
+helper gateway restart now >/dev/null 2>&1; check "gateway extra argument refused" 2 "$?"
+helper gateway restart >/dev/null 2>&1; [ $? -ne 2 ] && ok || fail "gateway restart refused"
+
 # ── boot watchdog: counting and the rollback message ─────────────────
 wd() { # wd TRIES MAX: run the watchdog's start() for a pending slot; prints its log
 	(

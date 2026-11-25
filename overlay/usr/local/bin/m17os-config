@@ -196,6 +196,24 @@ ensure_dashboard_log() {
 }
 ensure_dashboard_log
 
+# ensure_mqtt - m17-gateway sends its status to the local Mosquitto, where
+# m17-web reads it. A gateway configuration from before has no [MQTT]
+# section: add one, once. An existing section is left as it is, so MQTT
+# turned off by hand stays off. Only on an image that has the broker.
+ensure_mqtt() {
+	[ -f "$GATEWAY_INI" ] || return 0
+	grep -q '^[[:space:]]*\[MQTT\]' "$GATEWAY_INI" && return 0
+	command -v mosquitto >/dev/null 2>&1 || return 0
+	ini_set "$GATEWAY_INI" MQTT Enable true
+	ini_set "$GATEWAY_INI" MQTT Host 127.0.0.1
+	ini_set "$GATEWAY_INI" MQTT Port 1883
+	ini_set "$GATEWAY_INI" MQTT Name m17-gateway
+	ini_set "$GATEWAY_INI" MQTT LogLevel INFO
+	log "Turned on MQTT status ([MQTT] in the gateway's settings)"
+	slot_event "config: turned on MQTT status in the gateway's settings"
+}
+ensure_mqtt
+
 # ── Phase 1: source selection ─────────────────────────────────────────
 if $APPLY; then
 	SOURCE=$(mktemp) || exit 1

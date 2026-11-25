@@ -1,18 +1,61 @@
 #!/bin/sh
-# Health hook: m17-gateway is running, if it is enabled and configured.
-# Exit 0 = healthy. On failure, print a short reason.
+# Health hook: m17-gateway is running and has its modem, if it is enabled
+# and configured. Exit 0 = healthy. On failure, print a short reason.
+#
+# A process alone isn't enough: a gateway that can't open its modem (a
+# setting the modem refuses, a missing HAT) exits and is restarted every
+# 10 seconds, so a process exists most of the time. Healthy means the
+# process has run for MIN_UPTIME seconds without being restarted, and the
+# gateway logged its modem connected after it last started. The health
+# check runs hooks again until they pass, so a gateway that is still
+# starting just takes a little longer.
+
+PROC="${M17OS_PROC:-/proc}"
+GATEWAY_LOG="${M17OS_GATEWAY_LOG:-/var/log/m17-gateway/m17-gateway.log}"
+GATEWAY_INI="${M17OS_GATEWAY_INI:-/etc/m17-gateway.ini}"
+MIN_UPTIME="${M17OS_GATEWAY_MIN_UPTIME:-15}"
 
 rc-update show default 2>/dev/null | grep -q '^ *m17-gateway ' || exit 0
 grep -q '^[[:space:]]*Callsign[[:space:]]*=[[:space:]]*CALLSIGN_PLACEHOLDER' \
-	/etc/m17-gateway.ini 2>/dev/null && exit 0
+	"$GATEWAY_INI" 2>/dev/null && exit 0
 
 if ! rc-service m17-gateway status >/dev/null 2>&1; then
 	echo "service not started"
 	exit 1
 fi
 # pidof matches the process name; BusyBox pgrep -x does not
-if ! pidof m17-gateway >/dev/null; then
+pid=$(pidof m17-gateway | awk '{ print $1 }')
+if [ -z "$pid" ]; then
 	echo "process not running"
+	exit 1
+fi
+
+# How long it has run: its start time (clock ticks after boot, field 22
+# of /proc/PID/stat, after the command name in parentheses) against the
+# uptime. Ticks are 100 a second on Linux.
+age=$(awk -v up="$(cut -d' ' -f1 "$PROC/uptime" 2>/dev/null)" '{
+	sub(/^.*\) /, ""); print int(up - $20 / 100)
+}' "$PROC/$pid/stat" 2>/dev/null)
+if [ -z "$age" ] || [ "$age" -lt "$MIN_UPTIME" ]; then
+	echo "running for ${age:-?}s (wanted ${MIN_UPTIME}s without a restart)"
+	exit 1
+fi
+
+# The modem, connected since the gateway last started. The last error is
+# kept across restarts: in a restart loop the log often ends just after a
+# start, and the previous attempt's error is the reason.
+if ! awk '
+	/Loading settings from/ { connected = 0 }
+	/Connected to .* modem/ { connected = 1 }
+	/ERROR|Error/ { err = $0 }
+	END {
+		if (connected) exit 0
+		if (err != "") print "modem not connected: " substr(err, 1, 160)
+		else print "modem not connected"
+		exit 1
+	}
+' "$GATEWAY_LOG" 2>/dev/null; then
+	[ -r "$GATEWAY_LOG" ] || echo "no gateway log"
 	exit 1
 fi
 exit 0

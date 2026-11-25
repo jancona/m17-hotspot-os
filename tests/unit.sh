@@ -297,6 +297,43 @@ else
 	echo "skip: m17os-autoupdate tests need root"
 fi
 
+# ── Gateway health hook ───────────────────────────────────────────────
+# Stand-ins for OpenRC and pidof, a fake /proc and the gateway's log
+GH="$T/gh"
+mkdir -p "$GH/bin" "$GH/proc/4242"
+printf '#!/bin/sh\necho " m17-gateway | default"\n' > "$GH/bin/rc-update"
+printf '#!/bin/sh\nexit 0\n' > "$GH/bin/rc-service"
+printf '#!/bin/sh\necho 4242\n' > "$GH/bin/pidof"
+chmod +x "$GH/bin/"*
+printf '[General]\nCallsign=N1ADJ R\n' > "$GH/gw.ini"
+gh_proc() { # gh_proc UPTIME STARTTICKS - the system's uptime, the process's start
+	echo "$1 0.00" > "$GH/proc/uptime"
+	echo "4242 (m17-gateway) S 1 4242 4242 0 -1 0 0 0 0 0 0 0 0 0 20 0 9 0 $2 0 0" > "$GH/proc/4242/stat"
+}
+gh_hook() { # prints the hook's exit code, then its output
+	out=$(PATH="$GH/bin:$PATH" M17OS_PROC="$GH/proc" M17OS_GATEWAY_LOG="$GH/gw.log" M17OS_GATEWAY_INI="$GH/gw.ini" \
+		sh "$REPO_DIR/overlay/etc/m17os/health.d/50-m17-gateway" 2>&1)
+	echo "$? $out"
+}
+cat > "$GH/gw.log" <<'EOF'
+2026/11/24 12:52:53 [INFO] Loading settings from '/etc/m17-gateway.ini'
+2026/11/24 12:52:55.136323 [ERROR] Received a NAK from the modem: 02 04
+2026/11/24 12:52:55.136343 Error creating MMDVM modem: modem returned NAK
+2026/11/24 12:53:05 [INFO] Loading settings from '/etc/m17-gateway.ini'
+EOF
+gh_proc 100 9800   # started 2 s ago
+case "$(gh_hook)" in "1 running for 2s"*) ok ;; *) fail "a gateway just started passed: $(gh_hook)" ;; esac
+gh_proc 100 1000   # running 90 s, but no modem since its last start
+case "$(gh_hook)" in "1 modem not connected: "*"modem returned NAK"*) ok ;; *) fail "a gateway without its modem: $(gh_hook)" ;; esac
+echo "2026/11/24 12:53:07.049458 [INFO] Connected to MMDVM modem on /dev/ttyAMA0" >> "$GH/gw.log"
+check "gateway running with its modem" "0 " "$(gh_hook)"
+# Connected before a restart doesn't count
+echo "2026/11/24 13:00:00 [INFO] Loading settings from '/etc/m17-gateway.ini'" >> "$GH/gw.log"
+case "$(gh_hook)" in "1 modem not connected"*) ok ;; *) fail "a connection from before the last start counted: $(gh_hook)" ;; esac
+# Not configured yet: nothing to check
+printf '[General]\nCallsign=CALLSIGN_PLACEHOLDER\n' > "$GH/gw.ini"
+check "unconfigured gateway passes" "0 " "$(gh_hook)"
+
 # ── netwatch.sh (setup access point decisions) ───────────────────────
 # Each scenario runs the real loop with stand-ins: a fake clock, a
 # scripted "online" answer, and actions recorded in $NW/actions.

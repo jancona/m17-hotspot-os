@@ -441,6 +441,11 @@ M17OS_UPGRADE=/tmp/fake-upgrade sh $helper job-start os-check >/dev/null
 for i in 1 2 3 4 5; do sh $helper job-status os-check | grep -qx 'state=running' || break; sleep 1; done
 out=$(sh $helper job-status os-check)
 echo "$out" | grep -qx 'state=ok' && echo "$out" | grep -qx 'exit=1' && echo "$out" | grep -qx 'log: up to date' && ok || fail "os-check job: $out"
+printf '#!/bin/sh\necho "The M17 packages are up to date"\n' > /tmp/fake-autoupdate && chmod +x /tmp/fake-autoupdate
+M17OS_AUTOUPDATE=/tmp/fake-autoupdate sh $helper job-start packages >/dev/null
+for i in 1 2 3 4 5; do sh $helper job-status packages | grep -qx 'state=running' || break; sleep 1; done
+out=$(sh $helper job-status packages)
+echo "$out" | grep -qx 'state=ok' && echo "$out" | grep -qx 'log: The M17 packages are up to date' && ok || fail "packages job: $out"
 as_admin "doas -n $helper syslog" >/dev/null 2>&1
 check "syslog exit" 0 "$?"
 as_admin "doas -n $helper gateway restart" >/dev/null 2>&1

@@ -533,6 +533,7 @@ check "m17-web state dir" "m17-web:700" "$(stat -c %U:%a /var/lib/m17-web)"
 id m17-web | grep -q dialout && ok || fail "m17-web can't open the serial port: $(id m17-web)"
 grep -q 'location \^~ /setup/' /etc/nginx/http.d/default.conf && ok || fail "no /setup/ location in the nginx site"
 grep -q 'location \^~ /admin/' /etc/nginx/http.d/default.conf && ok || fail "no /admin/ location in the nginx site"
+grep -q 'location \^~ /dashboard/' /etc/nginx/http.d/default.conf && ok || fail "no /dashboard/ location in the nginx site"
 nginx -t 2>/dev/null && ok || fail "nginx -t with the /setup/ location"
 nginx -s reload 2>/dev/null || nginx
 su -s /bin/sh m17-web -c '/usr/bin/m17-web -listen 127.0.0.1:8090 -state-dir /var/lib/m17-web >/tmp/m17-web.log 2>&1 &'

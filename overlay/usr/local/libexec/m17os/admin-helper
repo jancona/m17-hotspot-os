@@ -22,7 +22,9 @@
 #   admin-helper firmware-status    the last flash: state=running|ok|failed,
 #                                   file=, started=, then its output as
 #                                   "log: " lines (nothing if none ran)
-#   admin-helper gateway stop|start|status
+#   admin-helper gateway stop|start|restart|status
+#                                   rc-service m17-gateway; status prints
+#                                   its state (started, stopped, crashed)
 #   admin-helper reboot
 #   admin-helper shutdown
 #
@@ -409,10 +411,10 @@ case "${1:-}" in
 		exit 0
 		;;
 	gateway)
-		[ $# -eq 2 ] || die "usage: gateway stop|start|status"
+		[ $# -eq 2 ] || die "usage: gateway stop|start|restart|status"
 		case "$2" in
-			stop|start|status) exec rc-service m17-gateway "$2" ;;
-			*) die "usage: gateway stop|start|status" ;;
+			stop|start|restart|status) exec rc-service m17-gateway "$2" ;;
+			*) die "usage: gateway stop|start|restart|status" ;;
 		esac
 		;;
 	reboot)

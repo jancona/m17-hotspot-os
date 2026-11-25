@@ -674,7 +674,9 @@ check "good config saved" "0 saved|Callsign=W1AW|Callsign=N1ADJ" "$st $out|$(ini
 [ -L "$GC/etc/m17-gateway.ini" ] && ok || fail "the ini symlink was replaced"
 out=$(gc gateway-config-restore); st=$?
 check "restore swaps back" "0 restored|Callsign=N1ADJ|Callsign=W1AW" "$st $out|$(ini | tail -n 1)|$(tail -n 1 "$GC/etc/m17-gateway/m17-gateway.ini.prev")"
-ls "$HR" | grep -q 'gateway' && fail "settings left in the run directory: $(ls "$HR")" || ok
+left=""
+for f in "$HR"/*gateway*; do [ -e "$f" ] && left="$left $f"; done
+[ -n "$left" ] && fail "settings left in the run directory:$left" || ok
 : | gc gateway-config-check >/dev/null 2>&1; check "empty settings refused" 2 "$?"
 touch "$GC/old"
 out=$(printf '[General]\nCallsign=W1AW\n' | gc gateway-config-save 2>&1); st=$?

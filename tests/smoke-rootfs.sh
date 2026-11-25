@@ -403,6 +403,46 @@ case "$out" in *"hostname: true"*) ok ;; *) fail "hostname change not reported: 
 out=$(printf 'hostname=smoke-renamed\n' | as_admin "doas -n $helper apply" 2>&1)
 case "$out" in *"hostname: false"*) ok ;; *) fail "unchanged hostname reported as a change: $out" ;; esac
 printf 'hostname=%s\n' "$old_host" | as_admin "doas -n $helper apply" >/dev/null 2>&1
+# Admin pages: saved networks added, replaced and removed one at a time,
+# keeping the others
+printf 'ssid=SmokeOpen\n' | as_admin "doas -n $helper wifi-add" >/dev/null 2>&1
+check "wifi-add exit" 0 "$?"
+out=$(as_admin "doas -n $helper wifi-networks" 2>&1)
+echo "$out" | grep -q "open	SmokeOpen$" && ok || fail "wifi-networks after add: $out"
+echo "$out" | grep -q "WizardNet$" && ok || fail "wifi-add dropped another network: $out"
+out=$(printf 'ssid=SmokeWPA\npassword=smoke-secret\n' | as_admin "doas -n $helper wifi-add" 2>&1)
+check "wifi-add secured exit" 0 "$?"
+grep -q 'smoke-secret' /etc/wpa_supplicant/wpa_supplicant.conf && fail "wifi-add kept the passphrase in clear" || ok
+as_admin "doas -n $helper wifi-networks" 2>&1 | grep -q "secured	SmokeWPA$" && ok || fail "secured network not listed"
+as_admin "doas -n $helper wifi-remove SmokeOpen" >/dev/null 2>&1
+as_admin "doas -n $helper wifi-remove SmokeWPA" >/dev/null 2>&1
+out=$(as_admin "doas -n $helper wifi-networks" 2>&1)
+echo "$out" | grep -q Smoke && fail "wifi-remove left: $out" || ok
+echo "$out" | grep -q "WizardNet$" && ok || fail "wifi-remove dropped another network: $out"
+as_admin "doas -n $helper wifi-remove NoSuchNet" >/dev/null 2>&1
+check "wifi-remove unknown" 2 "$?"
+printf 'ssid=bad"name\n' | as_admin "doas -n $helper wifi-add" >/dev/null 2>&1
+check "wifi-add refuses a quote" 2 "$?"
+# SSH keys listed and removed by their key
+as_admin "doas -n $helper ssh-keys" 2>&1 | grep -q "	test@smoke$" && ok || fail "ssh-keys: $(as_admin "doas -n $helper ssh-keys" 2>&1)"
+blob=$(echo "$key" | awk '{print $2}')
+as_admin "doas -n $helper ssh-key-remove $blob" >/dev/null 2>&1
+check "ssh-key-remove exit" 0 "$?"
+grep -qF "$blob" /home/m17/.ssh/authorized_keys && fail "key not removed" || ok
+check "authorized_keys owner after removal" "m17:600" "$(stat -c %U:%a /home/m17/.ssh/authorized_keys)"
+as_admin "doas -n $helper ssh-key-remove 'x;id'" >/dev/null 2>&1
+check "ssh-key-remove refuses a bad key" 2 "$?"
+# OS status and jobs
+as_admin "doas -n $helper os-status" 2>&1 | head -1 | grep -q '^{' && ok || fail "os-status: $(as_admin "doas -n $helper os-status" 2>&1)"
+as_admin "doas -n $helper job-start os-reboot" >/dev/null 2>&1
+check "job-start refuses unknown jobs" 2 "$?"
+printf '#!/bin/sh\necho "up to date"\nexit 1\n' > /tmp/fake-upgrade && chmod +x /tmp/fake-upgrade
+M17OS_UPGRADE=/tmp/fake-upgrade sh $helper job-start os-check >/dev/null
+for i in 1 2 3 4 5; do sh $helper job-status os-check | grep -qx 'state=running' || break; sleep 1; done
+out=$(sh $helper job-status os-check)
+echo "$out" | grep -qx 'state=ok' && echo "$out" | grep -qx 'exit=1' && echo "$out" | grep -qx 'log: up to date' && ok || fail "os-check job: $out"
+as_admin "doas -n $helper syslog" >/dev/null 2>&1
+check "syslog exit" 0 "$?"
 as_admin "doas -n $helper gateway restart" >/dev/null 2>&1
 check "helper refuses gateway restart" 2 "$?"
 as_admin "doas -n $helper rm -rf /" >/dev/null 2>&1

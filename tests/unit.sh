@@ -270,6 +270,21 @@ if [ "$(id -u)" -eq 0 ]; then
 	check "nothing to do" 0 "$(au --now)"
 	check "nothing result" current "$(result)"
 
+	# --check (the admin pages' Check for updates): both, installing and
+	# recording nothing
+	touch "$AU/os-available" "$AU/pkg-available"
+	cp "$AU/state/autoupdate.status" "$AU/status.before"
+	check "--check" 0 "$(au --check)"
+	grep -qx 'OS_AVAILABLE=2099.1.1.1' "$AU/out" && ok || fail "--check: no OS line: $(cat "$AU/out")"
+	grep -qx 'PACKAGES_AVAILABLE=m17-gateway 0.9.4-r0' "$AU/out" && ok || fail "--check: no packages line: $(cat "$AU/out")"
+	check "--check: OS checked only" "--check;" "$(calls upgrade)"
+	case "$(calls apk)" in *"upgrade -q"*) fail "--check installed packages" ;; *) ok ;; esac
+	check "--check: no reboot" "" "$(calls reboot)"
+	cmp -s "$AU/status.before" "$AU/state/autoupdate.status" && ok || fail "--check changed the last automatic run's status"
+	rm -f "$AU/os-available" "$AU/pkg-available"
+	au --check >/dev/null
+	grep -qx 'OS_CURRENT=true' "$AU/out" && grep -qx 'PACKAGES_CURRENT=true' "$AU/out" && ok || fail "--check, nothing new: $(cat "$AU/out")"
+
 	# --packages (the admin pages' Update now): packages only, never an OS
 	# release, even when one is available, so never a reboot
 	touch "$AU/os-available" "$AU/pkg-available"

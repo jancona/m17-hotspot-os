@@ -6,6 +6,13 @@
 #                                    in the update hour
 #        m17os-autoupdate --now      check and update now (still waits for
 #                                    the gateway to be idle)
+#        m17os-autoupdate --check    say what's available, OS release and
+#                                    M17 packages, installing nothing and
+#                                    recording nothing (the admin pages'
+#                                    "Check for updates"): KEY=VALUE lines
+#                                    OS_AVAILABLE= / OS_CURRENT= / OS_ERROR=
+#                                    and PACKAGES_AVAILABLE= /
+#                                    PACKAGES_CURRENT= / PACKAGES_ERROR=
 #        m17os-autoupdate --packages update the M17 packages now, as --now
 #                                    does, without looking for an OS release
 #                                    (so it never reboots); the admin pages'
@@ -60,6 +67,7 @@ MODE=cron
 case "${1:-}" in
 	--now) MODE=now ;;
 	--packages) MODE=packages ;;
+	--check) MODE=check ;;
 	--dry-run) MODE=dry ;;
 	--status)
 		echo "Policy:       $AUTO_UPDATE"
@@ -75,7 +83,7 @@ case "${1:-}" in
 		exit 0
 		;;
 	"") ;;
-	*) echo "Usage: m17os-autoupdate [--now | --packages | --dry-run | --status]" >&2; exit 2 ;;
+	*) echo "Usage: m17os-autoupdate [--now | --check | --packages | --dry-run | --status]" >&2; exit 2 ;;
 esac
 
 [ "$(id -u)" -eq 0 ] || { echo "m17os-autoupdate: must be run as root" >&2; exit 2; }
@@ -124,6 +132,63 @@ wait_idle() {
 	return 0
 }
 
+# package_updates - the installed M17 packages ($installed) and their
+# available upgrades, one "name version" per line ($pending). Returns 1 if
+# the package index couldn't be updated.
+package_updates() {
+	installed=""
+	pending=""
+	for p in $M17_PACKAGES; do
+		apk info -e "$p" >/dev/null 2>&1 && installed="$installed $p"
+	done
+	[ -n "$installed" ] || return 0
+	apk update -q >/dev/null 2>&1 || return 1
+	# apk upgrade with package names upgrades only those, and their
+	# dependencies only where a new version needs it (apk add -u would also
+	# upgrade every dependency, i.e. Alpine libraries)
+	# "(1/2) Upgrading m17-gateway (0.9.3-r0 -> 0.9.4-r0)" -> "m17-gateway 0.9.4-r0"
+	# shellcheck disable=SC2086
+	pending=$(apk upgrade --simulate $installed 2>/dev/null |
+		sed -n 's/^([0-9]*\/[0-9]*) Upgrading \([^ ]*\) ([^ ]* -> \([^ )]*\))$/\1 \2/p')
+}
+
+# summarize LINES - "name version" lines as "a 1, b 2"
+summarize() { echo "$1" | awk 'NF { printf "%s%s %s", (n++ ? ", " : ""), $1, $2 }'; }
+
+# ── --check: what's available, installing and recording nothing ─────
+if [ "$MODE" = check ]; then
+	os_out=$("$UPGRADE" --check 2>&1)
+	case $? in
+		0)
+			v=$(echo "$os_out" | sed -n 's/^Available:[[:space:]]*\([^ ]*\).*/\1/p')
+			say "System version ${v:-?} is available"
+			echo "OS_AVAILABLE=$v"
+			;;
+		1)
+			say "The system version is current"
+			echo "OS_CURRENT=true"
+			;;
+		*)
+			why=$(echo "$os_out" | grep -m1 -i error)
+			why=${why:-$(echo "$os_out" | tail -n 1)}
+			say "The system update check failed: $why"
+			echo "OS_ERROR=$why"
+			;;
+	esac
+	if ! package_updates; then
+		say "The package index couldn't be updated"
+		echo "PACKAGES_ERROR=package index update failed"
+	elif [ -n "$pending" ]; then
+		summary=$(summarize "$pending")
+		say "M17 package updates: $summary"
+		echo "PACKAGES_AVAILABLE=$summary"
+	else
+		say "The M17 packages are up to date"
+		echo "PACKAGES_CURRENT=true"
+	fi
+	exit 0
+fi
+
 install_mode=false
 if [ "$MODE" != dry ] && { [ "$MODE" = now ] || [ "$MODE" = packages ] || [ "$AUTO_UPDATE" = auto ]; }; then
 	install_mode=true
@@ -170,26 +235,15 @@ if [ -n "$os_available" ]; then
 fi
 
 # ── M17 packages ──────────────────────────────────────────────────────
-installed=""
-for p in $M17_PACKAGES; do
-	apk info -e "$p" >/dev/null 2>&1 && installed="$installed $p"
-done
-if [ -z "$installed" ]; then
-	status RESULT=current
-	exit 0
-fi
-if ! apk update -q >/dev/null 2>&1; then
+if ! package_updates; then
 	event "package index update failed"
 	status RESULT=failed REASON=apk-update
 	exit 1
 fi
-# apk upgrade with package names upgrades only those, and their
-# dependencies only where a new version needs it (apk add -u would also
-# upgrade every dependency, i.e. Alpine libraries)
-# "(1/2) Upgrading m17-gateway (0.9.3-r0 -> 0.9.4-r0)" -> "m17-gateway 0.9.4-r0"
-# shellcheck disable=SC2086
-pending=$(apk upgrade --simulate $installed 2>/dev/null |
-	sed -n 's/^([0-9]*\/[0-9]*) Upgrading \([^ ]*\) ([^ ]* -> \([^ )]*\))$/\1 \2/p')
+if [ -z "$installed" ]; then
+	status RESULT=current
+	exit 0
+fi
 if [ -z "$pending" ]; then
 	if [ "$MODE" = packages ]; then
 		say "The M17 packages are up to date"
@@ -199,7 +253,7 @@ if [ -z "$pending" ]; then
 	status RESULT=current
 	exit 0
 fi
-summary=$(echo "$pending" | awk '{ printf "%s%s %s", (NR > 1 ? ", " : ""), $1, $2 }')
+summary=$(summarize "$pending")
 if ! $install_mode; then
 	event "package updates available (not installed: policy $AUTO_UPDATE, mode $MODE): $summary"
 	status RESULT=available PACKAGES_AVAILABLE="$summary"

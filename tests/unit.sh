@@ -642,6 +642,45 @@ helper gateway reload >/dev/null 2>&1; check "gateway reload refused" 2 "$?"
 helper gateway restart now >/dev/null 2>&1; check "gateway extra argument refused" 2 "$?"
 helper gateway restart >/dev/null 2>&1; [ $? -ne 2 ] && ok || fail "gateway restart refused"
 
+# ── admin-helper gateway-config-* (stand-in gateway) ─────────────────
+GC="$T/gwconf"
+mkdir -p "$GC/etc/m17-gateway"
+printf '[General]\nCallsign=N1ADJ\n' > "$GC/etc/m17-gateway/m17-gateway.ini"
+ln -s m17-gateway/m17-gateway.ini "$GC/etc/m17-gateway.ini"
+# The stand-in: Callsign=BAD is an error, Extra= a warning; OLD acts as a
+# gateway without -check-config
+cat > "$GC/gw" <<'EOS'
+#!/bin/sh
+[ -f "${0%/*}/old" ] && { echo "flag provided but not defined: -check-config" >&2; exit 2; }
+[ "$1" = -check-config ] || exit 3
+st=0
+grep -q '^Callsign=BAD' "$3" && { echo "error: configured Callsign is bad"; st=1; }
+grep -q '^Extra=' "$3" && echo "warning: [General] Extra is ignored"
+exit $st
+EOS
+chmod +x "$GC/gw"
+gc() { M17OS_RUN="$HR" M17OS_GATEWAY_INI="$GC/etc/m17-gateway.ini" M17OS_GATEWAY_BIN="$GC/gw" sh "$REPO_DIR/overlay/usr/local/libexec/m17os/admin-helper" "$@"; }
+ini() { cat "$GC/etc/m17-gateway/m17-gateway.ini"; }
+out=$(printf '[General]\nCallsign=W1AW\nExtra=1\n' | gc gateway-config-check); st=$?
+check "config check ok" 0 "$st"
+check "config check warning" "warning: [General] Extra is ignored" "$out"
+out=$(printf '[General]\nCallsign=BAD\n' | gc gateway-config-check); st=$?
+check "config check error" "1 error: configured Callsign is bad" "$st $out"
+out=$(printf '[General]\nCallsign=BAD\n' | gc gateway-config-save); st=$?
+check "bad config not saved" "1 error: configured Callsign is bad|Callsign=N1ADJ" "$st $out|$(ini | tail -n 1)"
+[ -e "$GC/etc/m17-gateway/m17-gateway.ini.prev" ] && fail "refused save kept a .prev" || ok
+out=$(printf '[General]\nCallsign=W1AW\n' | gc gateway-config-save); st=$?
+check "good config saved" "0 saved|Callsign=W1AW|Callsign=N1ADJ" "$st $out|$(ini | tail -n 1)|$(tail -n 1 "$GC/etc/m17-gateway/m17-gateway.ini.prev")"
+[ -L "$GC/etc/m17-gateway.ini" ] && ok || fail "the ini symlink was replaced"
+out=$(gc gateway-config-restore); st=$?
+check "restore swaps back" "0 restored|Callsign=N1ADJ|Callsign=W1AW" "$st $out|$(ini | tail -n 1)|$(tail -n 1 "$GC/etc/m17-gateway/m17-gateway.ini.prev")"
+ls "$HR" | grep -q 'gateway' && fail "settings left in the run directory: $(ls "$HR")" || ok
+: | gc gateway-config-check >/dev/null 2>&1; check "empty settings refused" 2 "$?"
+touch "$GC/old"
+out=$(printf '[General]\nCallsign=W1AW\n' | gc gateway-config-save 2>&1); st=$?
+check "old gateway can't check" "2 admin-helper: this m17-gateway can't check settings; update it first" "$st $out"
+check "old gateway: nothing saved" "Callsign=N1ADJ" "$(ini | tail -n 1)"
+
 # ── boot watchdog: counting and the rollback message ─────────────────
 wd() { # wd TRIES MAX: run the watchdog's start() for a pending slot; prints its log
 	(
